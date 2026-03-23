@@ -306,7 +306,7 @@ export default function App() {
       }
 
       type Block = {
-        kind: "title" | "subTitle" | "body";
+        kind: "title" | "body";
         text: string;
       };
 
@@ -323,9 +323,6 @@ export default function App() {
       const blockToHtml = (block: Block) => {
         if (block.kind === "title") {
           return `<h1 style="margin: 0 0 8px; font-size: 28px; line-height: 1.3;">${escapeHtml(block.text)}</h1>`;
-        }
-        if (block.kind === "subTitle") {
-          return `<h2 style="margin: 24px 0 10px; font-size: 22px; line-height: 1.35;">${escapeHtml(block.text)}</h2>`;
         }
         return `<p style="margin: 0 0 14px; white-space: pre-wrap;">${escapeHtml(block.text).replaceAll("\n", "<br />")}</p>`;
       };
@@ -349,12 +346,12 @@ export default function App() {
         const original = normalizeForPdf(page.originalText || "(trống)");
 
         if (mode === "bilingual") {
-          blocks.push({ kind: "subTitle", text: `Trang ${i + 1} - Bản gốc` });
-          blocks.push({ kind: "body", text: original });
+          blocks.push({ kind: "body", text: `Bản gốc:\n${original}` });
+          blocks.push({ kind: "body", text: "" });
         }
 
-        blocks.push({ kind: "subTitle", text: `Trang ${i + 1} - Bản dịch` });
-        blocks.push({ kind: "body", text: translated });
+        blocks.push({ kind: "body", text: mode === "bilingual" ? `Bản dịch:\n${translated}` : translated });
+        blocks.push({ kind: "body", text: "" });
       }
 
       const measureRoot = document.createElement("div");
@@ -370,6 +367,12 @@ export default function App() {
       const measureContent = measureRoot.querySelector("#pdf-content") as HTMLDivElement;
       const pageHtmlList: string[] = [];
       let currentParts: string[] = [];
+      const hasVisibleText = (html: string) =>
+        html
+          .replace(/<br\s*\/?>/gi, "\n")
+          .replace(/<[^>]+>/g, "")
+          .replace(/\s+/g, "")
+          .length > 0;
 
       const fitsCurrentPage = (parts: string[]) => {
         measureContent.innerHTML = parts.join("");
@@ -380,7 +383,12 @@ export default function App() {
         if (currentParts.length === 0) {
           return;
         }
-        pageHtmlList.push(`<div style="${basePageStyle}"><div style="${contentStyle}">${currentParts.join("")}</div></div>`);
+        const merged = currentParts.join("");
+        if (!hasVisibleText(merged)) {
+          currentParts = [];
+          return;
+        }
+        pageHtmlList.push(`<div style="${basePageStyle}"><div style="${contentStyle}">${merged}</div></div>`);
         currentParts = [];
       };
 
@@ -388,7 +396,7 @@ export default function App() {
         const tokens = text.match(/\S+\s*/g) ?? [text];
         let low = 1;
         let high = tokens.length;
-        let best = 1;
+        let best = 0;
 
         while (low <= high) {
           const mid = Math.floor((low + high) / 2);
@@ -403,8 +411,11 @@ export default function App() {
           }
         }
 
-        const head = tokens.slice(0, best).join("").trimEnd();
-        const tail = tokens.slice(best).join("").trimStart();
+        const safeBest = best === 0 ? 1 : best;
+        const headRaw = tokens.slice(0, safeBest).join("");
+        const tailRaw = tokens.slice(safeBest).join("");
+        const head = headRaw.length > 0 ? headRaw.trimEnd() : text.slice(0, 1);
+        const tail = headRaw.length > 0 ? tailRaw.trimStart() : text.slice(1);
         return { head, tail };
       };
 
@@ -426,6 +437,9 @@ export default function App() {
           let remaining = block.text;
 
           while (remaining.length > 0) {
+            if (remaining.trim().length === 0) {
+              break;
+            }
             const html = blockToHtml({ kind: "body", text: remaining });
             const candidate = [...currentParts, html];
 
@@ -914,6 +928,32 @@ export default function App() {
                       <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
                       <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                     </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs font-bold opacity-60">
+                      Auto bắt đầu từ trang
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={Math.max(1, book.totalPages)}
+                      className="w-full rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
+                      value={autoStartPage}
+                      onChange={(e) => {
+                        const raw = Number.parseInt(e.target.value, 10);
+                        if (Number.isNaN(raw)) {
+                          setAutoStartPage(1);
+                          return;
+                        }
+
+                        const maxPage = Math.max(1, book.totalPages);
+                        setAutoStartPage(Math.min(Math.max(raw, 1), maxPage));
+                      }}
+                    />
+                    <p className="mt-1 text-[11px] opacity-60">
+                      Trang đã dịch sẵn sẽ tự động bỏ qua.
+                    </p>
                   </div>
 
                   <div>
