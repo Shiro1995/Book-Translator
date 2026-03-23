@@ -15,6 +15,6 @@ View your app in AI Studio: https://ai.studio/apps/cc3fe86f-6889-4ee1-9556-2334a
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Set `N8N_WEBHOOK_URL` and `N8N_AUTH_TOKEN` in `.env.local` if you want to override the defaults
 3. Run the app:
    `npm run dev`

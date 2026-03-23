@@ -1,5 +1,3 @@
-import { GoogleGenAI, Type } from "@google/genai";
-
 export type TranslationStatus = 'idle' | 'translating' | 'completed' | 'error';
 
 export interface Page {
