@@ -1,4 +1,5 @@
 export type TranslationStatus = 'idle' | 'translating' | 'completed' | 'error';
+export type PromptPreset = 'custom' | 'reader' | 'literary' | 'technical' | 'study';
 
 export interface Page {
   id: number;
@@ -19,6 +20,7 @@ export interface Book {
   sourceLang: string;
   targetLang: string;
   style: 'literal' | 'natural' | 'literary' | 'academic';
+  promptPreset: PromptPreset;
   glossary: string;
   instructions: string;
 }
@@ -28,6 +30,7 @@ export interface TranslationSettings {
   sourceLang: string;
   targetLang: string;
   style: 'natural' | 'literal' | 'literary' | 'academic';
+  promptPreset: PromptPreset;
   glossary: string;
   instructions: string;
 }

@@ -9,7 +9,33 @@ interface TranslateApiResponse {
   code?: string;
 }
 
-const FALLBACK_MODELS = ["gemini-2.5-pro", "gemini-2.5-flash"] as const;
+const PRIMARY_MODEL = "gemini-2.5-pro";
+const SECONDARY_MODEL = "gemini-3-flash-preview";
+const TERTIARY_MODEL = "gemini-2.5-flash";
+const FALLBACK_MODELS = [SECONDARY_MODEL, TERTIARY_MODEL] as const;
+const PRIMARY_MODEL_RETRY_INTERVAL_MS = 60_000;
+
+let lastPrimaryModelFailureAt: number | null = null;
+
+function canRetryPrimaryModel(now = Date.now()) {
+  return (
+    lastPrimaryModelFailureAt === null ||
+    now - lastPrimaryModelFailureAt >= PRIMARY_MODEL_RETRY_INTERVAL_MS
+  );
+}
+
+function buildModelsToTry(requestedModel: string, now = Date.now()) {
+  if (canRetryPrimaryModel(now)) {
+    return [PRIMARY_MODEL, ...FALLBACK_MODELS, requestedModel].filter(
+      (model, index, list) => Boolean(model) && list.indexOf(model) === index,
+    );
+  }
+
+  return [
+    requestedModel === PRIMARY_MODEL ? SECONDARY_MODEL : requestedModel,
+    ...FALLBACK_MODELS,
+  ].filter((model, index, list) => Boolean(model) && list.indexOf(model) === index);
+}
 
 export interface TranslationResult {
   translatedText: string;
@@ -23,9 +49,7 @@ export class TranslationService {
     settings: TranslationSettings,
     options?: { onModelChange?: (model: string) => void },
   ): Promise<TranslationResult> {
-    const modelsToTry = [settings.model, ...FALLBACK_MODELS].filter(
-      (model, index, list) => Boolean(model) && list.indexOf(model) === index,
-    );
+    const modelsToTry = buildModelsToTry(settings.model);
     let lastError: Error | null = null;
     const attemptedModels: string[] = [];
 
@@ -51,11 +75,19 @@ export class TranslationService {
         const data = (await response.json().catch(() => ({}))) as TranslateApiResponse;
 
         if (response.ok && data.translatedText) {
+          if (model === PRIMARY_MODEL) {
+            lastPrimaryModelFailureAt = null;
+          }
+
           return {
             translatedText: data.translatedText,
             usedModel: model,
             attemptedModels,
           };
+        }
+
+        if (model === PRIMARY_MODEL) {
+          lastPrimaryModelFailureAt = Date.now();
         }
 
         const detailText =
@@ -82,6 +114,10 @@ export class TranslationService {
 
         lastError = new Error(message);
       } catch (error) {
+        if (model === PRIMARY_MODEL) {
+          lastPrimaryModelFailureAt = Date.now();
+        }
+
         const message = error instanceof Error ? error.message : "Translation request failed";
         lastError = new Error(`Translation failed | model=${model} | ${message}`);
       }

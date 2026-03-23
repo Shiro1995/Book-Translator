@@ -21,7 +21,7 @@ import {
 import { motion } from "motion/react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { type Book, type TranslationSettings } from "./types";
+import { type Book, type Page, type PromptPreset, type TranslationSettings } from "./types";
 import { parseDOCX, parsePDF } from "./services/fileService";
 import { translationService } from "./services/translationService";
 import jsPDF from "jspdf";
@@ -35,6 +35,48 @@ const DRAFT_BOOK_STORAGE_KEY = "book-translator:draft-book";
 const DRAFT_UI_STORAGE_KEY = "book-translator:draft-ui";
 const DRAFT_SESSIONS_STORAGE_KEY = "book-translator:draft-sessions";
 const MAX_DRAFT_SESSIONS = 3;
+const PAGE_FILTER_OPTIONS = ["all", "idle", "error", "completed", "edited"] as const;
+
+type PageFilter = (typeof PAGE_FILTER_OPTIONS)[number];
+
+const PROMPT_PRESETS: Record<
+  PromptPreset,
+  {
+    label: string;
+    description: string;
+    instructions: string;
+  }
+> = {
+  custom: {
+    label: "Tùy chỉnh",
+    description: "Chỉ dùng glossary và hướng dẫn bạn tự nhập.",
+    instructions: "",
+  },
+  reader: {
+    label: "Dễ đọc",
+    description: "Ưu tiên câu văn mượt, tự nhiên, dễ đọc liền mạch.",
+    instructions:
+      "Translate into fluent, natural prose for readers. Preserve the original meaning, names, and paragraph structure.",
+  },
+  literary: {
+    label: "Văn học",
+    description: "Giữ giọng văn, sắc thái, nhịp điệu và hình ảnh.",
+    instructions:
+      "Preserve tone, voice, and imagery. Favor elegant literary Vietnamese while staying faithful to the source text.",
+  },
+  technical: {
+    label: "Kỹ thuật",
+    description: "Ưu tiên thuật ngữ ổn định, rõ nghĩa, nhất quán.",
+    instructions:
+      "Use consistent terminology, keep technical accuracy, and preserve proper nouns or source terms when needed for clarity.",
+  },
+  study: {
+    label: "Học thuật",
+    description: "Rõ ràng, chặt chẽ, giữ cấu trúc và ý nghĩa học thuật.",
+    instructions:
+      "Use precise academic Vietnamese, preserve logical structure, and avoid over-simplifying specialized concepts.",
+  },
+};
 
 interface DraftSession {
   book: Book;
@@ -63,6 +105,56 @@ function upsertDraftSession(
   );
 }
 
+function isPageEdited(page: Page) {
+  const translated = page.translatedText.trim();
+  if (!translated) {
+    return false;
+  }
+
+  if (page.versionHistory.length === 0) {
+    return true;
+  }
+
+  return translated !== page.versionHistory[0].trim();
+}
+
+function matchesPageFilter(page: Page, filter: PageFilter) {
+  switch (filter) {
+    case "idle":
+      return page.status === "idle" && page.translatedText.trim().length === 0;
+    case "error":
+      return page.status === "error";
+    case "completed":
+      return page.status === "completed" || page.translatedText.trim().length > 0;
+    case "edited":
+      return isPageEdited(page);
+    default:
+      return true;
+  }
+}
+
+function buildEffectiveSettings(settings: TranslationSettings): TranslationSettings {
+  const presetInstructions = PROMPT_PRESETS[settings.promptPreset].instructions.trim();
+  const customInstructions = settings.instructions.trim();
+
+  return {
+    ...settings,
+    instructions: [presetInstructions, customInstructions].filter(Boolean).join("\n\n"),
+  };
+}
+
+function getSettingsFromBook(book: Book): TranslationSettings {
+  return {
+    model: book.model,
+    sourceLang: book.sourceLang,
+    targetLang: book.targetLang,
+    style: book.style,
+    promptPreset: book.promptPreset ?? "reader",
+    glossary: book.glossary,
+    instructions: book.instructions,
+  };
+}
+
 export default function App() {
   const [book, setBook] = useState<Book | null>(null);
   const [currentPageIdx, setCurrentPageIdx] = useState(0);
@@ -76,12 +168,14 @@ export default function App() {
   const [retranslateConfirmIdx, setRetranslateConfirmIdx] = useState<number | null>(null);
   const [draftSessions, setDraftSessions] = useState<DraftSession[]>([]);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+  const [pageFilter, setPageFilter] = useState<PageFilter>("all");
   const [autoStartPage, setAutoStartPage] = useState(1);
   const [settings, setSettings] = useState<TranslationSettings>({
-    model: "gemini-3-flash-preview",
+    model: "gemini-2.5-pro",
     sourceLang: "English",
     targetLang: "Vietnamese",
     style: "natural",
+    promptPreset: "reader",
     glossary: "",
     instructions: "",
   });
@@ -95,6 +189,33 @@ export default function App() {
 
   useEffect(() => {
     settingsRef.current = settings;
+  }, [settings]);
+
+  useEffect(() => {
+    setBook((prev) => {
+      if (!prev) {
+        return prev;
+      }
+
+      const nextBook = {
+        ...prev,
+        ...settings,
+      };
+
+      if (
+        prev.model === nextBook.model &&
+        prev.sourceLang === nextBook.sourceLang &&
+        prev.targetLang === nextBook.targetLang &&
+        prev.style === nextBook.style &&
+        prev.promptPreset === nextBook.promptPreset &&
+        prev.glossary === nextBook.glossary &&
+        prev.instructions === nextBook.instructions
+      ) {
+        return prev;
+      }
+
+      return nextBook;
+    });
   }, [settings]);
 
   useEffect(() => {
@@ -116,6 +237,10 @@ export default function App() {
         .filter((session) => session?.book?.id)
         .map((session) => ({
           ...session,
+          book: {
+            ...session.book,
+            promptPreset: session.book.promptPreset ?? "reader",
+          },
           currentPageIdx: clampPageIndex(session.book, session.currentPageIdx ?? 0),
         }))
         .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -124,6 +249,7 @@ export default function App() {
       if (normalizedSessions.length > 0) {
         setDraftSessions(normalizedSessions);
         setBook(normalizedSessions[0].book);
+        setSettings(getSettingsFromBook(normalizedSessions[0].book));
         setCurrentPageIdx(normalizedSessions[0].currentPageIdx);
         return;
       }
@@ -142,6 +268,7 @@ export default function App() {
 
         setDraftSessions(migratedSessions);
         setBook(migratedSessions[0].book);
+        setSettings(getSettingsFromBook(migratedSessions[0].book));
         setCurrentPageIdx(migratedSessions[0].currentPageIdx);
       }
     } catch (error) {
@@ -205,6 +332,7 @@ export default function App() {
   const openDraftSession = (session: DraftSession) => {
     setUploadNotice(null);
     setBook(session.book);
+    setSettings(getSettingsFromBook(session.book));
     setCurrentPageIdx(clampPageIndex(session.book, session.currentPageIdx));
     setAutoStartPage(1);
     setIsReaderOpen(true);
@@ -217,6 +345,9 @@ export default function App() {
       if (book?.id === bookId) {
         const fallbackSession = nextSessions[0];
         setBook(fallbackSession?.book ?? null);
+        if (fallbackSession?.book) {
+          setSettings(getSettingsFromBook(fallbackSession.book));
+        }
         setCurrentPageIdx(fallbackSession?.currentPageIdx ?? 0);
         setIsReaderOpen(false);
       }
@@ -318,9 +449,13 @@ export default function App() {
         setBook((prev) => (prev && prev.model !== model ? { ...prev, model } : prev));
       };
 
-      const result = await translationService.translatePage(page.originalText, settingsRef.current, {
-        onModelChange: syncModel,
-      });
+      const result = await translationService.translatePage(
+        page.originalText,
+        buildEffectiveSettings(settingsRef.current),
+        {
+          onModelChange: syncModel,
+        },
+      );
 
       syncModel(result.usedModel);
 
@@ -650,16 +785,23 @@ export default function App() {
   const currentPage = book?.pages[currentPageIdx];
   const filteredPages = book?.pages.filter((page, idx) => {
     const needle = searchQuery.trim().toLowerCase();
-    if (!needle) {
-      return true;
-    }
-
-    return (
+    const matchesSearch =
+      !needle ||
       `${idx + 1}`.includes(needle) ||
       page.originalText.toLowerCase().includes(needle) ||
-      page.translatedText.toLowerCase().includes(needle)
-    );
+      page.translatedText.toLowerCase().includes(needle);
+
+    return matchesSearch && matchesPageFilter(page, pageFilter);
   });
+  const pageFilterCounts = book
+    ? {
+        all: book.pages.length,
+        idle: book.pages.filter((page) => matchesPageFilter(page, "idle")).length,
+        error: book.pages.filter((page) => matchesPageFilter(page, "error")).length,
+        completed: book.pages.filter((page) => matchesPageFilter(page, "completed")).length,
+        edited: book.pages.filter((page) => matchesPageFilter(page, "edited")).length,
+      }
+    : null;
 
   const hasDraftSession = draftSessions.length > 0;
   const activeDraftSession =
@@ -885,54 +1027,96 @@ export default function App() {
                     onChange={(e) => setSearchQuery(e.target.value)}
                   />
                 </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {PAGE_FILTER_OPTIONS.map((filter) => (
+                    <button
+                      key={`desktop-filter-${filter}`}
+                      onClick={() => setPageFilter(filter)}
+                      className={cn(
+                        "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                        pageFilter === filter
+                          ? "bg-emerald-600 text-white"
+                          : "bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10",
+                      )}
+                    >
+                      {filter === "all" && "Tất cả"}
+                      {filter === "idle" && "Chưa dịch"}
+                      {filter === "error" && "Lỗi"}
+                      {filter === "completed" && "Đã dịch"}
+                      {filter === "edited" && "Đã sửa tay"}
+                      {pageFilterCounts && (
+                        <span className="ml-1 opacity-70">
+                          {pageFilterCounts[filter]}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="flex-1 space-y-1 overflow-y-auto p-2">
-                {filteredPages?.map((page) => {
-                  const idx = book.pages.findIndex((item) => item.id === page.id);
+                {filteredPages?.length ? (
+                  filteredPages.map((page) => {
+                    const idx = book.pages.findIndex((item) => item.id === page.id);
 
-                  return (
-                    <button
-                      key={page.id}
-                      onClick={() => {
-                        setCurrentPageIdx(idx);
-                        setIsMobilePagesOpen(false);
-                      }}
-                      className={cn(
-                        "group flex w-full items-center justify-between rounded-xl p-3 text-sm transition-all",
-                        currentPageIdx === idx
-                          ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"
-                          : "hover:bg-black/5 dark:hover:bg-white/5",
-                      )}
-                    >
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono text-[10px] opacity-50">{idx + 1}</span>
-                        <span className="max-w-[140px] truncate">
-                          {page.originalText.substring(0, 20)}...
-                        </span>
-                      </div>
-                      {page.status === "completed" && (
-                        <CheckCircle2
-                          size={14}
-                          className={currentPageIdx === idx ? "text-white" : "text-emerald-500"}
-                        />
-                      )}
-                      {page.status === "translating" && (
-                        <Loader2 size={14} className="animate-spin" />
-                      )}
-                      {page.status === "error" && (
-                        <AlertCircle size={14} className="text-red-500" />
-                      )}
-                    </button>
-                  );
-                })}
+                    return (
+                      <button
+                        key={page.id}
+                        onClick={() => {
+                          setCurrentPageIdx(idx);
+                          setIsMobilePagesOpen(false);
+                        }}
+                        className={cn(
+                          "group flex w-full items-center justify-between rounded-xl p-3 text-sm transition-all",
+                          currentPageIdx === idx
+                            ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"
+                            : "hover:bg-black/5 dark:hover:bg-white/5",
+                        )}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="font-mono text-[10px] opacity-50">{idx + 1}</span>
+                          <span className="max-w-[140px] truncate">
+                            {page.originalText.substring(0, 20)}...
+                          </span>
+                        </div>
+                        {page.status === "translating" && (
+                          <Loader2 size={14} className="animate-spin" />
+                        )}
+                        {page.status !== "error" &&
+                          page.status !== "translating" &&
+                          isPageEdited(page) && (
+                            <Edit3
+                              size={14}
+                              className={currentPageIdx === idx ? "text-white" : "text-amber-500"}
+                            />
+                          )}
+                        {page.status !== "error" &&
+                          page.status !== "translating" &&
+                          !isPageEdited(page) &&
+                          page.status === "completed" && (
+                            <CheckCircle2
+                              size={14}
+                              className={currentPageIdx === idx ? "text-white" : "text-emerald-500"}
+                            />
+                          )}
+                        {page.status === "error" && (
+                          <AlertCircle size={14} className="text-red-500" />
+                        )}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="flex h-full items-center justify-center px-4 text-center text-sm opacity-50">
+                    Không có trang nào khớp bộ lọc hiện tại.
+                  </div>
+                )}
               </div>
 
               <div className="border-t border-black/10 bg-black/5 p-4 dark:border-white/10 dark:bg-white/5">
                 <div className="mb-2 flex items-center justify-between text-xs">
                   <span>Tiến độ dịch</span>
                   <span>
-                    {book.pages.filter((page) => page.status === "completed").length} /{" "}
+                    {book.pages.filter((page) => matchesPageFilter(page, "completed")).length} /{" "}
                     {book.totalPages} trang
                   </span>
                 </div>
@@ -940,7 +1124,7 @@ export default function App() {
                   <div
                     className="h-full bg-emerald-500 transition-all duration-500"
                     style={{
-                      width: `${(book.pages.filter((page) => page.status === "completed").length /
+                      width: `${(book.pages.filter((page) => matchesPageFilter(page, "completed")).length /
                         book.totalPages) *
                         100
                         }%`,
@@ -1039,14 +1223,21 @@ export default function App() {
                 <div className="relative flex flex-1 flex-col overflow-hidden rounded-2xl border border-black/5 bg-white shadow-sm dark:border-white/5 dark:bg-zinc-900">
                   <div className="flex items-center justify-between border-b border-black/5 px-4 py-2 text-[10px] font-semibold uppercase tracking-widest opacity-50 dark:border-white/5">
                     <span>Bản dịch ({settings.targetLang})</span>
-                    {currentPage?.status === "completed" && (
-                      <span className="flex items-center gap-1 text-emerald-500">
-                        <CheckCircle2 size={10} />
-                        Đã dịch
+                    {currentPage && isPageEdited(currentPage) ? (
+                      <span className="flex items-center gap-1 text-amber-500">
+                        <Edit3 size={10} />
+                        Đã sửa tay
                       </span>
+                    ) : (
+                      currentPage?.status === "completed" && (
+                        <span className="flex items-center gap-1 text-emerald-500">
+                          <CheckCircle2 size={10} />
+                          Đã dịch
+                        </span>
+                      )
                     )}
                   </div>
-                  <div className="relative flex-1 overflow-y-auto p-4 font-serif text-base leading-relaxed md:p-8 md:text-lg">
+                  <div className="relative flex flex-1 flex-col overflow-hidden p-4 font-serif text-base leading-relaxed md:p-8 md:text-lg">
                     {currentPage?.status === "translating" && (
                       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/80 backdrop-blur-sm dark:bg-zinc-900/80">
                         <Loader2 size={32} className="mb-4 animate-spin text-emerald-500" />
@@ -1108,7 +1299,7 @@ export default function App() {
 
                     {currentPage?.translatedText && (
                       <textarea
-                        className="h-full w-full resize-none bg-transparent outline-none focus:ring-0"
+                        className="min-h-0 flex-1 resize-none overflow-y-auto bg-transparent outline-none focus:ring-0"
                         value={currentPage.translatedText}
                         onChange={(e) => {
                           if (!book || !currentPage) {
@@ -1144,8 +1335,8 @@ export default function App() {
                       value={settings.model}
                       onChange={(e) => setSettings({ ...settings, model: e.target.value })}
                     >
-                      <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
                       <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                      <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
                       <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                     </select>
                   </div>
@@ -1190,6 +1381,29 @@ export default function App() {
                       <option value="literary">Văn học</option>
                       <option value="academic">Học thuật</option>
                     </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs font-bold opacity-60">Preset dịch</label>
+                    <select
+                      className="w-full rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
+                      value={settings.promptPreset}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          promptPreset: e.target.value as PromptPreset,
+                        })
+                      }
+                    >
+                      {Object.entries(PROMPT_PRESETS).map(([value, preset]) => (
+                        <option key={`desktop-preset-${value}`} value={value}>
+                          {preset.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[11px] opacity-60">
+                      {PROMPT_PRESETS[settings.promptPreset].description}
+                    </p>
                   </div>
 
                   <div>
@@ -1271,50 +1485,87 @@ export default function App() {
                         onChange={(e) => setSearchQuery(e.target.value)}
                       />
                     </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {PAGE_FILTER_OPTIONS.map((filter) => (
+                        <button
+                          key={`mobile-filter-${filter}`}
+                          onClick={() => setPageFilter(filter)}
+                          className={cn(
+                            "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                            pageFilter === filter
+                              ? "bg-emerald-600 text-white"
+                              : "bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10",
+                          )}
+                        >
+                          {filter === "all" && "Tất cả"}
+                          {filter === "idle" && "Chưa dịch"}
+                          {filter === "error" && "Lỗi"}
+                          {filter === "completed" && "Đã dịch"}
+                          {filter === "edited" && "Đã sửa tay"}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="flex-1 space-y-1 overflow-y-auto p-2">
-                    {filteredPages?.map((page) => {
-                      const idx = book.pages.findIndex((item) => item.id === page.id);
+                    {filteredPages?.length ? (
+                      filteredPages.map((page) => {
+                        const idx = book.pages.findIndex((item) => item.id === page.id);
 
-                      return (
-                        <button
-                          key={`mobile-page-${page.id}`}
-                          onClick={() => {
-                            setCurrentPageIdx(idx);
-                            setIsMobilePagesOpen(false);
-                          }}
-                          className={cn(
-                            "group flex w-full items-center justify-between rounded-xl p-3 text-sm transition-all",
-                            currentPageIdx === idx
-                              ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"
-                              : "hover:bg-black/5 dark:hover:bg-white/5",
-                          )}
-                        >
-                          <div className="flex items-center gap-3">
-                            <span className="font-mono text-[10px] opacity-50">{idx + 1}</span>
-                            <span className="max-w-[140px] truncate">
-                              {page.originalText.substring(0, 20)}...
-                            </span>
-                          </div>
-                          {page.status === "completed" && (
-                            <CheckCircle2
-                              size={14}
-                              className={currentPageIdx === idx ? "text-white" : "text-emerald-500"}
-                            />
-                          )}
-                          {page.status === "translating" && <Loader2 size={14} className="animate-spin" />}
-                          {page.status === "error" && <AlertCircle size={14} className="text-red-500" />}
-                        </button>
-                      );
-                    })}
+                        return (
+                          <button
+                            key={`mobile-page-${page.id}`}
+                            onClick={() => {
+                              setCurrentPageIdx(idx);
+                              setIsMobilePagesOpen(false);
+                            }}
+                            className={cn(
+                              "group flex w-full items-center justify-between rounded-xl p-3 text-sm transition-all",
+                              currentPageIdx === idx
+                                ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"
+                                : "hover:bg-black/5 dark:hover:bg-white/5",
+                            )}
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className="font-mono text-[10px] opacity-50">{idx + 1}</span>
+                              <span className="max-w-[140px] truncate">
+                                {page.originalText.substring(0, 20)}...
+                              </span>
+                            </div>
+                            {page.status === "translating" && <Loader2 size={14} className="animate-spin" />}
+                            {page.status === "error" && <AlertCircle size={14} className="text-red-500" />}
+                            {page.status !== "error" &&
+                              page.status !== "translating" &&
+                              isPageEdited(page) && (
+                                <Edit3
+                                  size={14}
+                                  className={currentPageIdx === idx ? "text-white" : "text-amber-500"}
+                                />
+                              )}
+                            {page.status !== "error" &&
+                              page.status !== "translating" &&
+                              !isPageEdited(page) &&
+                              page.status === "completed" && (
+                                <CheckCircle2
+                                  size={14}
+                                  className={currentPageIdx === idx ? "text-white" : "text-emerald-500"}
+                                />
+                              )}
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <div className="flex h-full items-center justify-center px-4 text-center text-sm opacity-50">
+                        Không có trang nào khớp bộ lọc hiện tại.
+                      </div>
+                    )}
                   </div>
 
                   <div className="border-t border-black/10 bg-black/5 p-4 dark:border-white/10 dark:bg-white/5">
                     <div className="mb-2 flex items-center justify-between text-xs">
                       <span>Tiến độ dịch</span>
                       <span>
-                        {book.pages.filter((page) => page.status === "completed").length} /{" "}
+                        {book.pages.filter((page) => matchesPageFilter(page, "completed")).length} /{" "}
                         {book.totalPages} trang
                       </span>
                     </div>
@@ -1322,7 +1573,7 @@ export default function App() {
                       <div
                         className="h-full bg-emerald-500 transition-all duration-500"
                         style={{
-                          width: `${(book.pages.filter((page) => page.status === "completed").length /
+                          width: `${(book.pages.filter((page) => matchesPageFilter(page, "completed")).length /
                             book.totalPages) *
                             100}%`,
                         }}
@@ -1359,8 +1610,8 @@ export default function App() {
                         value={settings.model}
                         onChange={(e) => setSettings({ ...settings, model: e.target.value })}
                       >
-                        <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
                         <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                        <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
                         <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                       </select>
                     </div>
@@ -1400,6 +1651,29 @@ export default function App() {
                         <option value="literary">Văn học</option>
                         <option value="academic">Học thuật</option>
                       </select>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-xs font-bold opacity-60">Preset dịch</label>
+                      <select
+                        className="w-full rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
+                        value={settings.promptPreset}
+                        onChange={(e) =>
+                          setSettings({
+                            ...settings,
+                            promptPreset: e.target.value as PromptPreset,
+                          })
+                        }
+                      >
+                        {Object.entries(PROMPT_PRESETS).map(([value, preset]) => (
+                          <option key={`mobile-preset-${value}`} value={value}>
+                            {preset.label}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-[11px] opacity-60">
+                        {PROMPT_PRESETS[settings.promptPreset].description}
+                      </p>
                     </div>
 
                     <div>
