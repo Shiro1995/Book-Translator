@@ -1,30 +1,20 @@
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
-import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import type { TextItem, TextMarkedContent } from 'pdfjs-dist/types/src/display/api';
+import * as pdfjsLib from 'pdfjs-dist';
 
-GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
+// Use the bundled worker from the package
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
-function isTextItem(
-  item: TextItem | TextMarkedContent,
-): item is TextItem {
-  return 'str' in item;
-}
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 export async function parsePDF(file: File) {
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await getDocument({ data: arrayBuffer }).promise;
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   const numPages = pdf.numPages;
   const pages = [];
 
   for (let i = 1; i <= numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    const text = content.items
-      .filter(isTextItem)
-      .map((item) => item.str)
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    const text = content.items.map((item: any) => item.str).join(' ');
     pages.push({
       id: i,
       originalText: text,
