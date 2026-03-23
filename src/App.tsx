@@ -16,6 +16,7 @@ import {
   Settings,
   Sun,
   Upload,
+  X,
 } from "lucide-react";
 import { motion } from "motion/react";
 import { clsx, type ClassValue } from "clsx";
@@ -32,6 +33,35 @@ function cn(...inputs: ClassValue[]) {
 
 const DRAFT_BOOK_STORAGE_KEY = "book-translator:draft-book";
 const DRAFT_UI_STORAGE_KEY = "book-translator:draft-ui";
+const DRAFT_SESSIONS_STORAGE_KEY = "book-translator:draft-sessions";
+const MAX_DRAFT_SESSIONS = 3;
+
+interface DraftSession {
+  book: Book;
+  currentPageIdx: number;
+  updatedAt: number;
+}
+
+function clampPageIndex(book: Book, pageIdx: number) {
+  return Math.min(Math.max(pageIdx, 0), Math.max(book.pages.length - 1, 0));
+}
+
+function upsertDraftSession(
+  sessions: DraftSession[],
+  nextBook: Book,
+  nextPageIdx: number,
+): DraftSession[] {
+  const nextSession: DraftSession = {
+    book: nextBook,
+    currentPageIdx: clampPageIndex(nextBook, nextPageIdx),
+    updatedAt: Date.now(),
+  };
+
+  return [nextSession, ...sessions.filter((session) => session.book.id !== nextBook.id)].slice(
+    0,
+    MAX_DRAFT_SESSIONS,
+  );
+}
 
 export default function App() {
   const [book, setBook] = useState<Book | null>(null);
@@ -39,8 +69,13 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isReaderOpen, setIsReaderOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(true);
+  const [isMobilePagesOpen, setIsMobilePagesOpen] = useState(false);
+  const [isMobileSettingsOpen, setIsMobileSettingsOpen] = useState(false);
   const [isAutoTranslating, setIsAutoTranslating] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [retranslateConfirmIdx, setRetranslateConfirmIdx] = useState<number | null>(null);
+  const [draftSessions, setDraftSessions] = useState<DraftSession[]>([]);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [autoStartPage, setAutoStartPage] = useState(1);
   const [settings, setSettings] = useState<TranslationSettings>({
     model: "gemini-3-flash-preview",
@@ -72,17 +107,42 @@ export default function App() {
 
   useEffect(() => {
     try {
-      const savedBook = localStorage.getItem(DRAFT_BOOK_STORAGE_KEY);
-      if (savedBook) {
-        setBook(JSON.parse(savedBook) as Book);
+      const savedSessionsRaw = localStorage.getItem(DRAFT_SESSIONS_STORAGE_KEY);
+      const savedSessions = savedSessionsRaw
+        ? (JSON.parse(savedSessionsRaw) as DraftSession[])
+        : [];
+
+      const normalizedSessions = savedSessions
+        .filter((session) => session?.book?.id)
+        .map((session) => ({
+          ...session,
+          currentPageIdx: clampPageIndex(session.book, session.currentPageIdx ?? 0),
+        }))
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, MAX_DRAFT_SESSIONS);
+
+      if (normalizedSessions.length > 0) {
+        setDraftSessions(normalizedSessions);
+        setBook(normalizedSessions[0].book);
+        setCurrentPageIdx(normalizedSessions[0].currentPageIdx);
+        return;
       }
 
+      const savedBook = localStorage.getItem(DRAFT_BOOK_STORAGE_KEY);
       const savedUi = localStorage.getItem(DRAFT_UI_STORAGE_KEY);
-      if (savedUi) {
-        const parsed = JSON.parse(savedUi) as { currentPageIdx?: number };
-        if (typeof parsed.currentPageIdx === "number" && parsed.currentPageIdx >= 0) {
-          setCurrentPageIdx(parsed.currentPageIdx);
-        }
+
+      if (savedBook) {
+        const parsedBook = JSON.parse(savedBook) as Book;
+        const parsedUi = savedUi ? (JSON.parse(savedUi) as { currentPageIdx?: number }) : undefined;
+        const migratedSessions = upsertDraftSession(
+          [],
+          parsedBook,
+          typeof parsedUi?.currentPageIdx === "number" ? parsedUi.currentPageIdx : 0,
+        );
+
+        setDraftSessions(migratedSessions);
+        setBook(migratedSessions[0].book);
+        setCurrentPageIdx(migratedSessions[0].currentPageIdx);
       }
     } catch (error) {
       console.error("Failed to restore draft state", error);
@@ -90,22 +150,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    localStorage.setItem(DRAFT_SESSIONS_STORAGE_KEY, JSON.stringify(draftSessions));
+  }, [draftSessions]);
+
+  useEffect(() => {
+    localStorage.removeItem(DRAFT_BOOK_STORAGE_KEY);
+    localStorage.removeItem(DRAFT_UI_STORAGE_KEY);
+  }, []);
+
+  useEffect(() => {
     if (!book) {
-      localStorage.removeItem(DRAFT_BOOK_STORAGE_KEY);
       return;
     }
 
-    localStorage.setItem(DRAFT_BOOK_STORAGE_KEY, JSON.stringify(book));
-  }, [book]);
-
-  useEffect(() => {
-    localStorage.setItem(
-      DRAFT_UI_STORAGE_KEY,
-      JSON.stringify({
-        currentPageIdx,
-      }),
-    );
-  }, [currentPageIdx]);
+    setDraftSessions((prev) => upsertDraftSession(prev, book, currentPageIdx));
+  }, [book, currentPageIdx]);
 
   useEffect(() => {
     if (!book) {
@@ -129,9 +188,57 @@ export default function App() {
     });
   }, [book]);
 
+  useEffect(() => {
+    if (isReaderOpen) {
+      return;
+    }
+
+    setIsMobilePagesOpen(false);
+    setIsMobileSettingsOpen(false);
+    setRetranslateConfirmIdx(null);
+  }, [isReaderOpen]);
+
+  useEffect(() => {
+    setRetranslateConfirmIdx(null);
+  }, [currentPageIdx]);
+
+  const openDraftSession = (session: DraftSession) => {
+    setUploadNotice(null);
+    setBook(session.book);
+    setCurrentPageIdx(clampPageIndex(session.book, session.currentPageIdx));
+    setAutoStartPage(1);
+    setIsReaderOpen(true);
+  };
+
+  const removeDraftSession = (bookId: string) => {
+    setDraftSessions((prev) => {
+      const nextSessions = prev.filter((session) => session.book.id !== bookId);
+
+      if (book?.id === bookId) {
+        const fallbackSession = nextSessions[0];
+        setBook(fallbackSession?.book ?? null);
+        setCurrentPageIdx(fallbackSession?.currentPageIdx ?? 0);
+        setIsReaderOpen(false);
+      }
+
+      return nextSessions;
+    });
+  };
+
   const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) {
+      return;
+    }
+
+    const existingSession = draftSessions.find(
+      (session) => session.book.name === file.name && session.book.size === file.size,
+    );
+    if (existingSession) {
+      setUploadNotice(`File "${file.name}" đã được tải lên rồi.`);
+      setBook(existingSession.book);
+      setCurrentPageIdx(existingSession.currentPageIdx);
+      e.target.value = "";
       return;
     }
 
@@ -144,9 +251,11 @@ export default function App() {
         result = await parseDOCX(file);
       } else {
         alert("Định dạng file chưa được hỗ trợ");
+        e.target.value = "";
         return;
       }
 
+      setUploadNotice(null);
       setBook({
         id: Math.random().toString(36).slice(2, 11),
         name: result.name,
@@ -161,10 +270,12 @@ export default function App() {
     } catch (error) {
       console.error(error);
       alert("Không thể đọc file");
+    } finally {
+      e.target.value = "";
     }
   };
 
-  const translatePage = async (idx: number) => {
+  const translatePage = async (idx: number, options?: { force?: boolean }) => {
     const currentBook = bookRef.current;
     if (!currentBook) {
       return;
@@ -174,10 +285,18 @@ export default function App() {
     if (!page) {
       return;
     }
-    if (page.status === "completed" && !confirm("Trang này đã dịch rồi. Dịch lại?")) {
+
+    const needsRetranslateConfirm =
+      !options?.force &&
+      page.status !== "translating" &&
+      (page.status === "completed" || page.translatedText.trim().length > 0);
+
+    if (needsRetranslateConfirm) {
+      setRetranslateConfirmIdx(idx);
       return;
     }
 
+    setRetranslateConfirmIdx(null);
     setBook((prev) => {
       if (!prev?.pages[idx]) {
         return prev;
@@ -189,7 +308,22 @@ export default function App() {
     });
 
     try {
-      const result = await translationService.translatePage(page.originalText, settingsRef.current);
+      const syncModel = (model: string) => {
+        if (settingsRef.current.model === model) {
+          return;
+        }
+
+        settingsRef.current = { ...settingsRef.current, model };
+        setSettings((prev) => (prev.model === model ? prev : { ...prev, model }));
+        setBook((prev) => (prev && prev.model !== model ? { ...prev, model } : prev));
+      };
+
+      const result = await translationService.translatePage(page.originalText, settingsRef.current, {
+        onModelChange: syncModel,
+      });
+
+      syncModel(result.usedModel);
+
       setBook((prev) => {
         if (!prev?.pages[idx]) {
           return prev;
@@ -198,10 +332,10 @@ export default function App() {
         const newPages = [...prev.pages];
         newPages[idx] = {
           ...newPages[idx],
-          translatedText: result,
+          translatedText: result.translatedText,
           status: "completed",
           error: undefined,
-          versionHistory: [result, ...newPages[idx].versionHistory],
+          versionHistory: [result.translatedText, ...newPages[idx].versionHistory],
         };
         return { ...prev, pages: newPages };
       });
@@ -527,11 +661,13 @@ export default function App() {
     );
   });
 
-  const hasDraftSession = Boolean(book);
+  const hasDraftSession = draftSessions.length > 0;
+  const activeDraftSession =
+    draftSessions.find((session) => session.book.id === book?.id) ?? draftSessions[0] ?? null;
 
   return (
-    <div className="min-h-screen bg-[#F5F5F0] text-[#141414] transition-colors duration-300 dark:bg-[#0A0A0A] dark:text-[#E4E3E0]">
-      <header className="sticky top-0 z-50 flex h-16 items-center justify-between border-b border-black/10 bg-inherit px-6 backdrop-blur-md dark:border-white/10">
+    <div className="flex min-h-screen flex-col bg-[#F5F5F0] text-[#141414] transition-colors duration-300 dark:bg-[#0A0A0A] dark:text-[#E4E3E0]">
+      <header className="sticky top-0 z-50 flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-black/10 bg-inherit px-4 py-3 backdrop-blur-md dark:border-white/10 md:h-16 md:flex-nowrap md:px-6 md:py-0">
         <div className="flex items-center gap-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 font-bold text-white">
             L
@@ -539,7 +675,7 @@ export default function App() {
           <h1 className="serif text-xl font-semibold italic tracking-tight">Book Translator</h1>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto sm:gap-4">
           <button
             onClick={() => setIsDarkMode(!isDarkMode)}
             className="rounded-full p-2 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
@@ -548,7 +684,7 @@ export default function App() {
           </button>
 
           {!book || !isReaderOpen ? (
-            <label className="flex cursor-pointer items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-emerald-900/20 transition-all hover:bg-emerald-700">
+            <label className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-emerald-900/20 transition-all hover:bg-emerald-700 sm:w-auto">
               <Upload size={16} />
               Tải sách lên
               <input
@@ -559,7 +695,7 @@ export default function App() {
               />
             </label>
           ) : (
-            <div className="flex items-center gap-2">
+            <div className="flex w-full items-center justify-end gap-2 sm:w-auto">
               <button
                 onClick={() => void exportPDF("translated")}
                 disabled={isExporting}
@@ -575,14 +711,14 @@ export default function App() {
                 }}
                 className="px-2 text-sm text-red-500 hover:underline"
               >
-                Đóng
+                Quay lại
               </button>
             </div>
           )}
           {hasDraftSession && !isReaderOpen && (
             <button
-              onClick={() => setIsReaderOpen(true)}
-              className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium hover:bg-black/5 dark:border-white/10 dark:bg-zinc-900"
+              onClick={() => activeDraftSession && openDraftSession(activeDraftSession)}
+              className="w-full rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium hover:bg-black/5 sm:w-auto dark:border-white/10 dark:bg-zinc-900"
             >
               Quay lại bản đang dịch
             </button>
@@ -590,25 +726,24 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex h-[calc(100vh-64px)] overflow-hidden">
+      <main className="flex flex-1 overflow-hidden">
         {!book || !isReaderOpen ? (
-          <div className="flex flex-1 flex-col items-center justify-center p-12 text-center">
+          <div className="flex flex-1 flex-col items-center justify-center p-6 text-center md:p-12">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="max-w-xl"
+              className="w-full max-w-xl"
             >
               <div className="mx-auto mb-8 flex h-20 w-20 items-center justify-center rounded-3xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30">
                 <FileText size={40} />
               </div>
-              <h2 className="serif mb-4 text-4xl font-light italic">
+              <h2 className="serif mb-4 text-3xl font-light italic md:text-4xl">
                 Dịch sách để đọc và chỉnh sửa từng trang
               </h2>
               <p className="mb-8 leading-relaxed text-zinc-500 dark:text-zinc-400">
-                Hỗ trợ PDF và DOCX. Văn bản được tách thành từng trang, gửi sang n8n
-                webhook để xử lý bản dịch, sau đó trả về giao diện để bạn xem và sửa.
+                Hỗ trợ PDF và DOCX. Văn bản được tách thành từng trang để xử lý bản dịch, sau đó trả về giao diện để bạn xem và sửa.
               </p>
-              <label className="inline-flex cursor-pointer items-center gap-3 rounded-2xl bg-[#141414] px-8 py-4 font-medium text-white shadow-2xl transition-transform hover:scale-105 dark:bg-[#E4E3E0] dark:text-black">
+              <label className="inline-flex w-full cursor-pointer items-center justify-center gap-3 rounded-2xl bg-[#141414] px-8 py-4 font-medium text-white shadow-2xl transition-transform hover:scale-[1.02] sm:w-auto sm:hover:scale-105 dark:bg-[#E4E3E0] dark:text-black">
                 <Upload size={20} />
                 Chọn tài liệu để bắt đầu
                 <input
@@ -621,6 +756,7 @@ export default function App() {
 
               <button
                 onClick={() => {
+                  setUploadNotice(null);
                   setBook({
                     id: "mock",
                     name: "Sách mẫu - Đắc Nhân Tâm.pdf",
@@ -658,28 +794,68 @@ export default function App() {
                   setAutoStartPage(1);
                   setIsReaderOpen(true);
                 }}
-                className="mt-4 text-sm text-zinc-500 underline hover:text-emerald-500"
+                className="mt-4 ml-4 text-sm text-zinc-500 underline hover:text-emerald-500"
               >
                 Dùng dữ liệu mẫu để thử nghiệm
               </button>
 
-              {hasDraftSession && (
-                <div className="mt-6 rounded-2xl border border-black/10 bg-black/5 p-4 text-left dark:border-white/10 dark:bg-white/5">
-                  <p className="text-sm font-semibold">Phiên dịch đang lưu</p>
-                  <p className="mt-1 text-xs opacity-70">{book?.name}</p>
-                  <button
-                    onClick={() => setIsReaderOpen(true)}
-                    className="mt-3 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-                  >
-                    Quay lại màn dịch
-                  </button>
+              {uploadNotice && (
+                <div className="mt-6 rounded-2xl border border-amber-500/20 bg-amber-50 p-4 text-left text-amber-900 dark:bg-amber-500/10 dark:text-amber-100">
+                  <p className="text-sm font-semibold">{uploadNotice}</p>
                 </div>
               )}
 
-              <div className="mt-12 grid grid-cols-3 gap-6 text-sm opacity-60">
+              {hasDraftSession && (
+                <div className="mt-6 rounded-2xl border border-black/10 bg-black/5 p-4 text-left dark:border-white/10 dark:bg-white/5">
+                  <div className="mb-3 flex items-center justify-between">
+                    <p className="text-sm font-semibold">Phiên dịch đang lưu</p>
+                    <p className="text-xs opacity-60">Tối đa 3 file</p>
+                  </div>
+
+                  <div className="space-y-3">
+                    {draftSessions.map((session) => {
+                      const completedPages = session.book.pages.filter(
+                        (page) => page.status === "completed" || page.translatedText.trim().length > 0,
+                      ).length;
+
+                      return (
+                        <div
+                          key={session.book.id}
+                          className="rounded-xl border border-black/10 bg-white/80 p-3 dark:border-white/10 dark:bg-zinc-900/70"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium">{session.book.name}</p>
+                              <p className="mt-1 text-xs opacity-70">
+                                {completedPages}/{session.book.totalPages} trang đã dịch
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => removeDraftSession(session.book.id)}
+                              className="rounded-lg p-1 text-zinc-500 hover:bg-black/5 hover:text-red-500 dark:hover:bg-white/5"
+                              aria-label={`Xóa session ${session.book.name}`}
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+
+                          <button
+                            onClick={() => openDraftSession(session)}
+                            className="mt-3 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+                          >
+                            Quay lại màn dịch
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-12 grid grid-cols-1 gap-6 text-sm opacity-60 sm:grid-cols-3">
                 <div>
                   <div className="mb-1 font-bold">Webhook</div>
-                  n8n workflow
+                  Auto FLow
                 </div>
                 <div>
                   <div className="mb-1 font-bold">Bilingual</div>
@@ -694,7 +870,7 @@ export default function App() {
           </div>
         ) : (
           <>
-            <aside className="flex w-72 flex-col border-r border-black/10 bg-white/50 backdrop-blur-sm dark:border-white/10 dark:bg-zinc-900/50">
+            <aside className="hidden md:flex md:w-72 flex-col border-r border-black/10 bg-white/50 backdrop-blur-sm dark:border-white/10 dark:bg-zinc-900/50">
               <div className="border-b border-black/10 p-4 dark:border-white/10">
                 <div className="relative">
                   <Search
@@ -718,7 +894,10 @@ export default function App() {
                   return (
                     <button
                       key={page.id}
-                      onClick={() => setCurrentPageIdx(idx)}
+                      onClick={() => {
+                        setCurrentPageIdx(idx);
+                        setIsMobilePagesOpen(false);
+                      }}
                       className={cn(
                         "group flex w-full items-center justify-between rounded-xl p-3 text-sm transition-all",
                         currentPageIdx === idx
@@ -772,8 +951,20 @@ export default function App() {
             </aside>
 
             <div className="flex flex-1 flex-col overflow-hidden">
-              <div className="flex h-14 items-center justify-between border-b border-black/10 bg-white/30 px-6 dark:border-white/10 dark:bg-zinc-900/30">
-                <div className="flex items-center gap-4">
+              <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 border-b border-black/10 bg-white/30 px-3 py-2 dark:border-white/10 dark:bg-zinc-900/30 md:h-14 md:flex-nowrap md:px-6 md:py-0">
+                <div className="flex items-center gap-2 md:gap-4">
+                  <button
+                    onClick={() => setIsMobilePagesOpen(true)}
+                    className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-medium hover:bg-black/5 md:hidden dark:border-white/10 dark:bg-zinc-900"
+                  >
+                    Trang
+                  </button>
+                  <button
+                    onClick={() => setIsMobileSettingsOpen(true)}
+                    className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-medium hover:bg-black/5 md:hidden dark:border-white/10 dark:bg-zinc-900"
+                  >
+                    Cài đặt
+                  </button>
                   <div className="flex items-center rounded-lg bg-black/5 p-1 dark:bg-white/5">
                     <button
                       onClick={() => setCurrentPageIdx(Math.max(0, currentPageIdx - 1))}
@@ -795,7 +986,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex w-full flex-wrap items-center justify-end gap-2 md:w-auto">
                   {isAutoTranslating ? (
                     <button
                       onClick={() => setIsAutoTranslating(false)}
@@ -827,7 +1018,7 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => setIsSettingsOpen((prev) => !prev)}
-                    className="flex items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium hover:bg-black/5 dark:border-white/10 dark:bg-zinc-900"
+                    className="hidden items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium hover:bg-black/5 md:flex dark:border-white/10 dark:bg-zinc-900"
                   >
                     <Settings size={16} />
                     {isSettingsOpen ? "Ẩn setting" : "Hiện setting"}
@@ -835,12 +1026,12 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex flex-1 gap-6 overflow-hidden p-6">
+              <div className="flex flex-1 flex-col gap-3 overflow-hidden p-3 md:gap-6 md:p-6 lg:flex-row">
                 <div className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-black/5 bg-white shadow-sm dark:border-white/5 dark:bg-zinc-900">
                   <div className="border-b border-black/5 px-4 py-2 text-[10px] font-semibold uppercase tracking-widest opacity-50 dark:border-white/5">
                     Bản gốc ({settings.sourceLang})
                   </div>
-                  <div className="flex-1 overflow-y-auto p-8 font-serif text-lg leading-relaxed">
+                  <div className="flex-1 overflow-y-auto p-4 font-serif text-base leading-relaxed md:p-8 md:text-lg">
                     {currentPage?.originalText}
                   </div>
                 </div>
@@ -855,7 +1046,7 @@ export default function App() {
                       </span>
                     )}
                   </div>
-                  <div className="relative flex-1 overflow-y-auto p-8 font-serif text-lg leading-relaxed">
+                  <div className="relative flex-1 overflow-y-auto p-4 font-serif text-base leading-relaxed md:p-8 md:text-lg">
                     {currentPage?.status === "translating" && (
                       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/80 backdrop-blur-sm dark:bg-zinc-900/80">
                         <Loader2 size={32} className="mb-4 animate-spin text-emerald-500" />
@@ -878,6 +1069,35 @@ export default function App() {
                         </button>
                       </div>
                     )}
+
+                    {retranslateConfirmIdx === currentPageIdx &&
+                      currentPage?.status !== "translating" && (
+                        <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/88 p-6 backdrop-blur-sm dark:bg-zinc-900/88">
+                          <div className="w-full max-w-md rounded-2xl border border-amber-500/20 bg-amber-50 p-5 text-center shadow-sm dark:bg-amber-500/10">
+                            <AlertCircle size={36} className="mx-auto mb-3 text-amber-600" />
+                            <h3 className="mb-2 text-base font-semibold text-amber-700 dark:text-amber-300">
+                              Trang này đã có bản dịch
+                            </h3>
+                            <p className="mb-5 text-sm text-amber-900/70 dark:text-amber-100/70">
+                              Dịch lại sẽ thay bản dịch hiện tại bằng kết quả mới.
+                            </p>
+                            <div className="flex flex-col justify-center gap-2 sm:flex-row">
+                              <button
+                                onClick={() => setRetranslateConfirmIdx(null)}
+                                className="rounded-lg border border-amber-600/20 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-300/20 dark:text-amber-200 dark:hover:bg-amber-400/10"
+                              >
+                                Giữ bản hiện tại
+                              </button>
+                              <button
+                                onClick={() => void translatePage(currentPageIdx, { force: true })}
+                                className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600"
+                              >
+                                Dịch lại trang này
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                     {!currentPage?.translatedText && currentPage?.status === "idle" && (
                       <div className="flex h-full flex-col items-center justify-center italic opacity-20">
@@ -910,7 +1130,7 @@ export default function App() {
             </div>
 
             {isSettingsOpen && (
-              <aside className="w-80 overflow-y-auto border-l border-black/10 bg-white/50 p-6 dark:border-white/10 dark:bg-zinc-900/50">
+              <aside className="hidden overflow-y-auto border-l border-black/10 bg-white/50 p-6 dark:border-white/10 dark:bg-zinc-900/50 lg:block lg:w-80">
                 <div className="mb-8 flex items-center gap-2 opacity-50">
                   <Settings size={18} />
                   <h3 className="text-sm font-bold uppercase tracking-widest">Cấu hình dịch</h3>
@@ -1010,13 +1230,212 @@ export default function App() {
                     <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
                       <h4 className="mb-1 text-xs font-bold text-emerald-600">Lưu ý</h4>
                       <p className="text-[11px] leading-relaxed text-emerald-700/70">
-                        Bản dịch hiện được gửi qua n8n webhook. Nếu workflow chưa active hoặc
+                        Bản dịch hiện được gửi qua webhook. Nếu workflow chưa active hoặc
                         test webhook chưa được Execute, trang sẽ báo lỗi ở bước dịch.
                       </p>
                     </div>
                   </div>
                 </div>
               </aside>
+            )}
+
+            {isMobilePagesOpen && (
+              <div className="fixed inset-0 z-[70] md:hidden">
+                <button
+                  onClick={() => setIsMobilePagesOpen(false)}
+                  className="absolute inset-0 bg-black/40"
+                  aria-label="Đóng danh sách trang"
+                />
+                <aside className="absolute inset-y-0 left-0 flex w-[86vw] max-w-xs flex-col border-r border-black/10 bg-white p-0 shadow-2xl dark:border-white/10 dark:bg-zinc-900">
+                  <div className="flex items-center justify-between border-b border-black/10 p-4 dark:border-white/10">
+                    <h3 className="text-sm font-semibold">Danh sách trang</h3>
+                    <button
+                      onClick={() => setIsMobilePagesOpen(false)}
+                      className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+
+                  <div className="border-b border-black/10 p-4 dark:border-white/10">
+                    <div className="relative">
+                      <Search
+                        className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"
+                        size={14}
+                      />
+                      <input
+                        type="text"
+                        placeholder="Tìm trang..."
+                        className="w-full rounded-lg bg-black/5 py-2 pl-9 pr-4 text-sm outline-none ring-emerald-500 focus:ring-1 dark:bg-white/5"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex-1 space-y-1 overflow-y-auto p-2">
+                    {filteredPages?.map((page) => {
+                      const idx = book.pages.findIndex((item) => item.id === page.id);
+
+                      return (
+                        <button
+                          key={`mobile-page-${page.id}`}
+                          onClick={() => {
+                            setCurrentPageIdx(idx);
+                            setIsMobilePagesOpen(false);
+                          }}
+                          className={cn(
+                            "group flex w-full items-center justify-between rounded-xl p-3 text-sm transition-all",
+                            currentPageIdx === idx
+                              ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"
+                              : "hover:bg-black/5 dark:hover:bg-white/5",
+                          )}
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="font-mono text-[10px] opacity-50">{idx + 1}</span>
+                            <span className="max-w-[140px] truncate">
+                              {page.originalText.substring(0, 20)}...
+                            </span>
+                          </div>
+                          {page.status === "completed" && (
+                            <CheckCircle2
+                              size={14}
+                              className={currentPageIdx === idx ? "text-white" : "text-emerald-500"}
+                            />
+                          )}
+                          {page.status === "translating" && <Loader2 size={14} className="animate-spin" />}
+                          {page.status === "error" && <AlertCircle size={14} className="text-red-500" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="border-t border-black/10 bg-black/5 p-4 dark:border-white/10 dark:bg-white/5">
+                    <div className="mb-2 flex items-center justify-between text-xs">
+                      <span>Tiến độ dịch</span>
+                      <span>
+                        {book.pages.filter((page) => page.status === "completed").length} /{" "}
+                        {book.totalPages} trang
+                      </span>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                      <div
+                        className="h-full bg-emerald-500 transition-all duration-500"
+                        style={{
+                          width: `${(book.pages.filter((page) => page.status === "completed").length /
+                            book.totalPages) *
+                            100}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                </aside>
+              </div>
+            )}
+
+            {isMobileSettingsOpen && (
+              <div className="fixed inset-0 z-[70] md:hidden">
+                <button
+                  onClick={() => setIsMobileSettingsOpen(false)}
+                  className="absolute inset-0 bg-black/40"
+                  aria-label="Đóng cài đặt"
+                />
+                <aside className="absolute inset-y-0 right-0 w-[90vw] max-w-sm overflow-y-auto border-l border-black/10 bg-white p-6 shadow-2xl dark:border-white/10 dark:bg-zinc-900">
+                  <div className="mb-6 flex items-center justify-between">
+                    <h3 className="text-sm font-bold uppercase tracking-widest opacity-70">Cài đặt dịch</h3>
+                    <button
+                      onClick={() => setIsMobileSettingsOpen(false)}
+                      className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+
+                  <div className="space-y-6">
+                    <div>
+                      <label className="mb-2 block text-xs font-bold opacity-60">Model</label>
+                      <select
+                        className="w-full rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
+                        value={settings.model}
+                        onChange={(e) => setSettings({ ...settings, model: e.target.value })}
+                      >
+                        <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
+                        <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                        <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-xs font-bold opacity-60">Auto bắt đầu từ trang</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={Math.max(1, book.totalPages)}
+                        className="w-full rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
+                        value={autoStartPage}
+                        onChange={(e) => {
+                          const raw = Number.parseInt(e.target.value, 10);
+                          if (Number.isNaN(raw)) {
+                            setAutoStartPage(1);
+                            return;
+                          }
+
+                          const maxPage = Math.max(1, book.totalPages);
+                          setAutoStartPage(Math.min(Math.max(raw, 1), maxPage));
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-xs font-bold opacity-60">Văn phong</label>
+                      <select
+                        className="w-full rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
+                        value={settings.style}
+                        onChange={(e) =>
+                          setSettings({ ...settings, style: e.target.value as TranslationSettings["style"] })
+                        }
+                      >
+                        <option value="natural">Tự nhiên</option>
+                        <option value="literal">Sát nghĩa</option>
+                        <option value="literary">Văn học</option>
+                        <option value="academic">Học thuật</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-xs font-bold opacity-60">Ngôn ngữ đích</label>
+                      <select
+                        className="w-full rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
+                        value={settings.targetLang}
+                        onChange={(e) => setSettings({ ...settings, targetLang: e.target.value })}
+                      >
+                        <option value="Vietnamese">Tiếng Việt</option>
+                        <option value="English">Tiếng Anh</option>
+                        <option value="Japanese">Tiếng Nhật</option>
+                        <option value="French">Tiếng Pháp</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-xs font-bold opacity-60">Glossary</label>
+                      <textarea
+                        className="h-24 w-full resize-none rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
+                        value={settings.glossary}
+                        onChange={(e) => setSettings({ ...settings, glossary: e.target.value })}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-xs font-bold opacity-60">Hướng dẫn thêm</label>
+                      <textarea
+                        className="h-24 w-full resize-none rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
+                        value={settings.instructions}
+                        onChange={(e) => setSettings({ ...settings, instructions: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                </aside>
+              </div>
             )}
           </>
         )}

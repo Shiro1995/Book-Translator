@@ -6,63 +6,96 @@ interface TranslateApiResponse {
   details?: unknown;
   status?: number;
   webhookUrl?: string;
+  code?: string;
 }
 
 const FALLBACK_MODELS = ["gemini-2.5-pro", "gemini-2.5-flash"] as const;
 
+export interface TranslationResult {
+  translatedText: string;
+  usedModel: string;
+  attemptedModels: string[];
+}
+
 export class TranslationService {
-  async translatePage(text: string, settings: TranslationSettings): Promise<string> {
+  async translatePage(
+    text: string,
+    settings: TranslationSettings,
+    options?: { onModelChange?: (model: string) => void },
+  ): Promise<TranslationResult> {
     const modelsToTry = [settings.model, ...FALLBACK_MODELS].filter(
       (model, index, list) => Boolean(model) && list.indexOf(model) === index,
     );
     let lastError: Error | null = null;
+    const attemptedModels: string[] = [];
 
     for (const model of modelsToTry.slice(0, 3)) {
-      const response = await fetch("/api/translate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text,
-          settings: {
-            ...settings,
-            model,
+      options?.onModelChange?.(model);
+      attemptedModels.push(model);
+
+      try {
+        const response = await fetch("/api/translate", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
           },
-        }),
-      });
+          body: JSON.stringify({
+            text,
+            settings: {
+              ...settings,
+              model,
+            },
+          }),
+        });
 
-      const data = (await response.json().catch(() => ({}))) as TranslateApiResponse;
+        const data = (await response.json().catch(() => ({}))) as TranslateApiResponse;
 
-      if (response.ok && data.translatedText) {
-        return data.translatedText;
+        if (response.ok && data.translatedText) {
+          return {
+            translatedText: data.translatedText,
+            usedModel: model,
+            attemptedModels,
+          };
+        }
+
+        const detailText =
+          typeof data.details === "string"
+            ? data.details
+            : data.details
+              ? JSON.stringify(data.details)
+              : undefined;
+        const extra = [
+          `model=${model}`,
+          data.status ? `status=${data.status}` : undefined,
+          data.code ? `code=${data.code}` : undefined,
+          data.webhookUrl ? `webhook=${data.webhookUrl}` : undefined,
+        ]
+          .filter(Boolean)
+          .join(" | ");
+        const message = [
+          data.error ?? "Translation failed",
+          detailText,
+          extra || undefined,
+        ]
+          .filter(Boolean)
+          .join(" | ");
+
+        lastError = new Error(message);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Translation request failed";
+        lastError = new Error(`Translation failed | model=${model} | ${message}`);
       }
-
-      const detailText =
-        typeof data.details === "string"
-          ? data.details
-          : data.details
-            ? JSON.stringify(data.details)
-            : undefined;
-      const extra = [
-        `model=${model}`,
-        data.status ? `status=${data.status}` : undefined,
-        data.webhookUrl ? `webhook=${data.webhookUrl}` : undefined,
-      ]
-        .filter(Boolean)
-        .join(" | ");
-      const message = [
-        data.error ?? "Translation failed",
-        detailText,
-        extra || undefined,
-      ]
-        .filter(Boolean)
-        .join(" | ");
-
-      lastError = new Error(message);
     }
 
-    throw lastError ?? new Error("Translation failed after 3 attempts");
+    const attemptsSummary = attemptedModels.length
+      ? `attemptedModels=${attemptedModels.join(" -> ")}`
+      : undefined;
+
+    const finalMessage = [lastError?.message ?? "Translation failed after 3 attempts", attemptsSummary]
+      .filter(Boolean)
+      .join(" | ");
+
+    throw new Error(finalMessage);
   }
 }
 
