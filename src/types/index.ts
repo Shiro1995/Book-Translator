@@ -15,6 +15,7 @@ export interface Book {
   size: number;
   totalPages: number;
   pages: Page[];
+  model: string;
   sourceLang: string;
   targetLang: string;
   style: 'literal' | 'natural' | 'literary' | 'academic';
@@ -23,6 +24,7 @@ export interface Book {
 }
 
 export interface TranslationSettings {
+  model: string;
   sourceLang: string;
   targetLang: string;
   style: 'natural' | 'literal' | 'literary' | 'academic';

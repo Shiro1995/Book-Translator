@@ -25,6 +25,7 @@ type RequestWithFile = Request & {
 type TranslationStyle = "natural" | "literal" | "literary" | "academic";
 
 interface TranslationSettings {
+  model: string;
   sourceLang: string;
   targetLang: string;
   style: TranslationStyle;
@@ -37,6 +38,26 @@ interface TranslationRequestBody {
   settings?: Partial<TranslationSettings>;
   pageId?: number;
   bookName?: string;
+}
+
+const VIETNAMESE_DIACRITIC_REGEX =
+  /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/gi;
+
+function isVietnameseTarget(targetLang: string) {
+  const normalized = targetLang.trim().toLowerCase();
+  return normalized.includes("vietnamese") || normalized.includes("tiếng việt");
+}
+
+function looksLikeVietnameseMissingDiacritics(text: string) {
+  const normalized = text.normalize("NFC");
+  const letters = normalized.match(/[A-Za-zÀ-ỹĐđ]/g)?.length ?? 0;
+  if (letters < 80) {
+    return false;
+  }
+
+  const diacriticChars = normalized.match(VIETNAMESE_DIACRITIC_REGEX)?.length ?? 0;
+  const ratio = diacriticChars / letters;
+  return ratio < 0.035;
 }
 
 if (!fs.existsSync(`${UPLOAD_DIR}/`)) {
@@ -190,6 +211,7 @@ async function handleTranslate(req: Request<object, object, TranslationRequestBo
   }
 
   const settings: TranslationSettings = {
+    model: req.body?.settings?.model?.trim() || "gemini-3-flash-preview",
     sourceLang: req.body?.settings?.sourceLang?.trim() || "auto-detect",
     targetLang: req.body?.settings?.targetLang?.trim() || "Vietnamese",
     style: req.body?.settings?.style ?? "natural",
@@ -197,13 +219,23 @@ async function handleTranslate(req: Request<object, object, TranslationRequestBo
     instructions: req.body?.settings?.instructions?.trim() ?? "",
   };
 
+  const instructionsForRequest = [
+    settings.instructions,
+    isVietnameseTarget(settings.targetLang)
+      ? "Bắt buộc xuất tiếng Việt có đầy đủ dấu (dấu thanh và ký tự ă â ê ô ơ ư đ). Không được viết tiếng Việt không dấu."
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   const webhookPayload = {
     text,
+    model: settings.model,
     sourceLang: settings.sourceLang,
     targetLang: settings.targetLang,
     style: settings.style,
     glossary: settings.glossary,
-    instructions: settings.instructions,
+    instructions: instructionsForRequest,
     pageId: req.body?.pageId ?? null,
     bookName: req.body?.bookName ?? null,
   };
@@ -264,6 +296,15 @@ async function handleTranslate(req: Request<object, object, TranslationRequestBo
       return res.status(502).json({
         error: "n8n webhook returned no translated text",
         details: typeof parsedBody === "string" ? parsedBody : parsedBody,
+      });
+    }
+
+    if (isVietnameseTarget(settings.targetLang) && looksLikeVietnameseMissingDiacritics(translatedText)) {
+      return res.status(502).json({
+        code: "E_VIETNAMESE_DIACRITICS",
+        error: "translated Vietnamese text appears to be missing diacritics",
+        details:
+          "Likely encoding/transcoding issue in n8n flow or downstream parser. Check UTF-8 handling in Webhook, HTTP Request, and Respond to Webhook nodes.",
       });
     }
 

@@ -8,22 +8,36 @@ interface TranslateApiResponse {
   webhookUrl?: string;
 }
 
+const FALLBACK_MODELS = ["gemini-2.5-pro", "gemini-2.5-flash"] as const;
+
 export class TranslationService {
   async translatePage(text: string, settings: TranslationSettings): Promise<string> {
-    const response = await fetch("/api/translate", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text,
-        settings,
-      }),
-    });
+    const modelsToTry = [settings.model, ...FALLBACK_MODELS].filter(
+      (model, index, list) => Boolean(model) && list.indexOf(model) === index,
+    );
+    let lastError: Error | null = null;
 
-    const data = (await response.json().catch(() => ({}))) as TranslateApiResponse;
+    for (const model of modelsToTry.slice(0, 3)) {
+      const response = await fetch("/api/translate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text,
+          settings: {
+            ...settings,
+            model,
+          },
+        }),
+      });
 
-    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as TranslateApiResponse;
+
+      if (response.ok && data.translatedText) {
+        return data.translatedText;
+      }
+
       const detailText =
         typeof data.details === "string"
           ? data.details
@@ -31,6 +45,7 @@ export class TranslationService {
             ? JSON.stringify(data.details)
             : undefined;
       const extra = [
+        `model=${model}`,
         data.status ? `status=${data.status}` : undefined,
         data.webhookUrl ? `webhook=${data.webhookUrl}` : undefined,
       ]
@@ -43,14 +58,11 @@ export class TranslationService {
       ]
         .filter(Boolean)
         .join(" | ");
-      throw new Error(message);
+
+      lastError = new Error(message);
     }
 
-    if (!data.translatedText) {
-      throw new Error("Webhook returned empty translation");
-    }
-
-    return data.translatedText;
+    throw lastError ?? new Error("Translation failed after 3 attempts");
   }
 }
 
