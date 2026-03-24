@@ -13,6 +13,9 @@ export default defineConfig(() => {
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
+      server: {
+        allowedHosts: ["songdoi.online", "www.songdoi.online"],
+      },
       hmr: process.env.DISABLE_HMR !== "true",
     },
   };
