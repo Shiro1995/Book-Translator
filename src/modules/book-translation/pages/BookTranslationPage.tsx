@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Download,
   Edit3,
-  FileText,
   Loader2,
   Moon,
   Pause,
@@ -18,9 +17,23 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { motion } from "motion/react";
 import { clsx, type ClassValue } from "clsx";
+import { useNavigate } from "react-router-dom";
 import { twMerge } from "tailwind-merge";
+import { routePaths } from "@/app/router/paths";
+import { BookTranslationLanding } from "../components/BookTranslationLanding";
+import {
+  clearLegacyDraftState,
+  clampPageIndex,
+  type DraftSession,
+  persistDraftSessions,
+  restoreDraftSessions,
+  upsertDraftSession,
+} from "../draftSessions";
+import {
+  peekPendingBookTranslationLaunch,
+  takePendingBookTranslationLaunch,
+} from "../pendingUploadStore";
 import { type Book, type Page, type PromptPreset, type TranslationSettings } from "../types";
 import { parseDOCX, parsePDF } from "../services/fileService";
 import { translationService } from "../services/translationService";
@@ -31,10 +44,6 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-const DRAFT_BOOK_STORAGE_KEY = "book-translator:draft-book";
-const DRAFT_UI_STORAGE_KEY = "book-translator:draft-ui";
-const DRAFT_SESSIONS_STORAGE_KEY = "book-translator:draft-sessions";
-const MAX_DRAFT_SESSIONS = 3;
 const AUTO_TRANSLATE_PARALLEL_LIMIT = 3;
 const AUTO_TRANSLATE_INITIAL_STAGGER_MS = 5_000;
 const PAGE_FILTER_OPTIONS = ["all", "idle", "error", "completed", "edited"] as const;
@@ -79,33 +88,6 @@ const PROMPT_PRESETS: Record<
       "Use precise academic Vietnamese, preserve logical structure, and avoid over-simplifying specialized concepts.",
   },
 };
-
-interface DraftSession {
-  book: Book;
-  currentPageIdx: number;
-  updatedAt: number;
-}
-
-function clampPageIndex(book: Book, pageIdx: number) {
-  return Math.min(Math.max(pageIdx, 0), Math.max(book.pages.length - 1, 0));
-}
-
-function upsertDraftSession(
-  sessions: DraftSession[],
-  nextBook: Book,
-  nextPageIdx: number,
-): DraftSession[] {
-  const nextSession: DraftSession = {
-    book: nextBook,
-    currentPageIdx: clampPageIndex(nextBook, nextPageIdx),
-    updatedAt: Date.now(),
-  };
-
-  return [nextSession, ...sessions.filter((session) => session.book.id !== nextBook.id)].slice(
-    0,
-    MAX_DRAFT_SESSIONS,
-  );
-}
 
 function isPageEdited(page: Page) {
   const translated = page.translatedText.trim();
@@ -162,6 +144,7 @@ function getSettingsFromBook(book: Book): TranslationSettings {
 }
 
 export default function App() {
+  const navigate = useNavigate();
   const [book, setBook] = useState<Book | null>(null);
   const [currentPageIdx, setCurrentPageIdx] = useState(0);
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -173,6 +156,7 @@ export default function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [retranslateConfirmIdx, setRetranslateConfirmIdx] = useState<number | null>(null);
   const [draftSessions, setDraftSessions] = useState<DraftSession[]>([]);
+  const [hasRestoredDraftState, setHasRestoredDraftState] = useState(false);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [pageFilter, setPageFilter] = useState<PageFilter>("all");
   const [autoStartPage, setAutoStartPage] = useState(1);
@@ -245,61 +229,35 @@ export default function App() {
 
   useEffect(() => {
     try {
-      const savedSessionsRaw = localStorage.getItem(DRAFT_SESSIONS_STORAGE_KEY);
-      const savedSessions = savedSessionsRaw
-        ? (JSON.parse(savedSessionsRaw) as DraftSession[])
-        : [];
-
-      const normalizedSessions = savedSessions
-        .filter((session) => session?.book?.id)
-        .map((session) => ({
-          ...session,
-          book: {
-            ...session.book,
-            promptPreset: session.book.promptPreset ?? "reader",
-          },
-          currentPageIdx: clampPageIndex(session.book, session.currentPageIdx ?? 0),
-        }))
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, MAX_DRAFT_SESSIONS);
+      const hasPendingLaunch = Boolean(peekPendingBookTranslationLaunch());
+      const normalizedSessions = restoreDraftSessions();
 
       if (normalizedSessions.length > 0) {
         setDraftSessions(normalizedSessions);
-        setBook(normalizedSessions[0].book);
-        setSettings(getSettingsFromBook(normalizedSessions[0].book));
-        setCurrentPageIdx(normalizedSessions[0].currentPageIdx);
+        if (!hasPendingLaunch) {
+          setBook(normalizedSessions[0].book);
+          setSettings(getSettingsFromBook(normalizedSessions[0].book));
+          setCurrentPageIdx(normalizedSessions[0].currentPageIdx);
+        }
         return;
-      }
-
-      const savedBook = localStorage.getItem(DRAFT_BOOK_STORAGE_KEY);
-      const savedUi = localStorage.getItem(DRAFT_UI_STORAGE_KEY);
-
-      if (savedBook) {
-        const parsedBook = JSON.parse(savedBook) as Book;
-        const parsedUi = savedUi ? (JSON.parse(savedUi) as { currentPageIdx?: number }) : undefined;
-        const migratedSessions = upsertDraftSession(
-          [],
-          parsedBook,
-          typeof parsedUi?.currentPageIdx === "number" ? parsedUi.currentPageIdx : 0,
-        );
-
-        setDraftSessions(migratedSessions);
-        setBook(migratedSessions[0].book);
-        setSettings(getSettingsFromBook(migratedSessions[0].book));
-        setCurrentPageIdx(migratedSessions[0].currentPageIdx);
       }
     } catch (error) {
       console.error("Failed to restore draft state", error);
+    } finally {
+      setHasRestoredDraftState(true);
     }
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(DRAFT_SESSIONS_STORAGE_KEY, JSON.stringify(draftSessions));
-  }, [draftSessions]);
+    if (!hasRestoredDraftState) {
+      return;
+    }
+
+    persistDraftSessions(draftSessions);
+  }, [draftSessions, hasRestoredDraftState]);
 
   useEffect(() => {
-    localStorage.removeItem(DRAFT_BOOK_STORAGE_KEY);
-    localStorage.removeItem(DRAFT_UI_STORAGE_KEY);
+    clearLegacyDraftState();
   }, []);
 
   useEffect(() => {
@@ -355,6 +313,46 @@ export default function App() {
     setIsReaderOpen(true);
   };
 
+  const openSampleBook = () => {
+    setUploadNotice(null);
+    setBook({
+      id: "mock",
+      name: "Sách mẫu - Đắc Nhân Tâm.pdf",
+      size: 1024 * 1024,
+      totalPages: 3,
+      pages: [
+        {
+          id: 1,
+          originalText:
+            "Chapter 1: Fundamental Techniques in Handling People. If you want to gather honey, don't kick over the beehive.",
+          translatedText: "",
+          status: "idle",
+          versionHistory: [],
+        },
+        {
+          id: 2,
+          originalText:
+            "Chapter 2: Six Ways to Make People Like You. Become genuinely interested in other people.",
+          translatedText: "",
+          status: "idle",
+          versionHistory: [],
+        },
+        {
+          id: 3,
+          originalText:
+            "Chapter 3: How to Win People to Your Way of Thinking. The only way to get the best of an argument is to avoid it.",
+          translatedText: "",
+          status: "idle",
+          versionHistory: [],
+        },
+      ],
+      ...settings,
+    });
+    setCurrentPageIdx(0);
+    setAutoStartPage(1);
+    setIsReaderOpen(true);
+  };
+
   const removeDraftSession = (bookId: string) => {
     setDraftSessions((prev) => {
       const nextSessions = prev.filter((session) => session.book.id !== bookId);
@@ -373,20 +371,18 @@ export default function App() {
     });
   };
 
-  const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
+  const importBookFile = async (file: File, options?: { openExistingSession?: boolean }) => {
     const existingSession = draftSessions.find(
       (session) => session.book.name === file.name && session.book.size === file.size,
     );
     if (existingSession) {
       setUploadNotice(`File "${file.name}" đã được tải lên rồi.`);
+      if (options?.openExistingSession) {
+        openDraftSession(existingSession);
+        return;
+      }
       setBook(existingSession.book);
       setCurrentPageIdx(existingSession.currentPageIdx);
-      e.target.value = "";
       return;
     }
 
@@ -417,10 +413,53 @@ export default function App() {
     } catch (error) {
       console.error(error);
       alert("Không thể đọc file");
+    }
+  };
+
+  const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      await importBookFile(file);
     } finally {
       e.target.value = "";
     }
   };
+
+  useEffect(() => {
+    if (!hasRestoredDraftState) {
+      return;
+    }
+
+    const pendingLaunch = takePendingBookTranslationLaunch();
+    if (!pendingLaunch) {
+      return;
+    }
+
+    if (pendingLaunch.type === "upload") {
+      void importBookFile(pendingLaunch.file, { openExistingSession: true });
+      return;
+    }
+
+    if (pendingLaunch.type === "sample") {
+      openSampleBook();
+      return;
+    }
+
+    const matchedSession =
+      draftSessions.find((session) => session.book.id === pendingLaunch.bookId) ??
+      restoreDraftSessions().find((session) => session.book.id === pendingLaunch.bookId);
+
+    if (matchedSession) {
+      openDraftSession(matchedSession);
+      return;
+    }
+
+    setUploadNotice("Không tìm thấy phiên dịch đã chọn.");
+  }, [draftSessions, hasRestoredDraftState, settings]);
 
   const translatePage = async (idx: number, options?: { force?: boolean }) => {
     const currentBook = bookRef.current;
@@ -913,7 +952,7 @@ export default function App() {
 
   const exitReader = () => {
     setIsAutoTranslating(false);
-    setIsReaderOpen(false);
+    navigate(routePaths.home);
   };
 
   return (
@@ -1041,146 +1080,14 @@ export default function App() {
 
       <main className="flex flex-1 overflow-hidden">
         {!book || !isReaderOpen ? (
-          <div className="flex flex-1 flex-col items-center justify-center p-6 text-center md:p-12">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="w-full max-w-xl"
-            >
-              <div className="mx-auto mb-8 flex h-20 w-20 items-center justify-center rounded-3xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30">
-                <FileText size={40} />
-              </div>
-              <h2 className="serif mb-4 text-3xl font-light italic md:text-4xl">
-                Dịch sách để đọc và chỉnh sửa từng trang
-              </h2>
-              <p className="mb-8 leading-relaxed text-zinc-500 dark:text-zinc-400">
-                Hỗ trợ PDF và DOCX. Văn bản được tách thành từng trang để xử lý bản dịch, sau đó trả về giao diện để bạn xem và sửa.
-              </p>
-              <label className="inline-flex w-full cursor-pointer items-center justify-center gap-3 rounded-2xl bg-[#141414] px-8 py-4 font-medium text-white shadow-2xl transition-transform hover:scale-[1.02] sm:w-auto sm:hover:scale-105 dark:bg-[#E4E3E0] dark:text-black">
-                <Upload size={20} />
-                Chọn tài liệu để bắt đầu
-                <input
-                  type="file"
-                  className="hidden"
-                  onChange={handleFileUpload}
-                  accept=".pdf,.docx,.doc"
-                />
-              </label>
-
-              <button
-                onClick={() => {
-                  setUploadNotice(null);
-                  setBook({
-                    id: "mock",
-                    name: "Sách mẫu - Đắc Nhân Tâm.pdf",
-                    size: 1024 * 1024,
-                    totalPages: 3,
-                    pages: [
-                      {
-                        id: 1,
-                        originalText:
-                          "Chapter 1: Fundamental Techniques in Handling People. If you want to gather honey, don't kick over the beehive.",
-                        translatedText: "",
-                        status: "idle",
-                        versionHistory: [],
-                      },
-                      {
-                        id: 2,
-                        originalText:
-                          "Chapter 2: Six Ways to Make People Like You. Become genuinely interested in other people.",
-                        translatedText: "",
-                        status: "idle",
-                        versionHistory: [],
-                      },
-                      {
-                        id: 3,
-                        originalText:
-                          "Chapter 3: How to Win People to Your Way of Thinking. The only way to get the best of an argument is to avoid it.",
-                        translatedText: "",
-                        status: "idle",
-                        versionHistory: [],
-                      },
-                    ],
-                    ...settings,
-                  });
-                  setCurrentPageIdx(0);
-                  setAutoStartPage(1);
-                  setIsReaderOpen(true);
-                }}
-                className="mt-4 ml-4 text-sm text-zinc-500 underline hover:text-emerald-500"
-              >
-                Dùng dữ liệu mẫu để thử nghiệm
-              </button>
-
-              {uploadNotice && (
-                <div className="mt-6 rounded-2xl border border-amber-500/20 bg-amber-50 p-4 text-left text-amber-900 dark:bg-amber-500/10 dark:text-amber-100">
-                  <p className="text-sm font-semibold">{uploadNotice}</p>
-                </div>
-              )}
-
-              {hasDraftSession && (
-                <div className="mt-6 rounded-2xl border border-black/10 bg-black/5 p-4 text-left dark:border-white/10 dark:bg-white/5">
-                  <div className="mb-3 flex items-center justify-between">
-                    <p className="text-sm font-semibold">Phiên dịch đang lưu</p>
-                    <p className="text-xs opacity-60">Tối đa 3 file</p>
-                  </div>
-
-                  <div className="space-y-3">
-                    {draftSessions.map((session) => {
-                      const completedPages = session.book.pages.filter(
-                        (page) => page.status === "completed" || page.translatedText.trim().length > 0,
-                      ).length;
-
-                      return (
-                        <div
-                          key={session.book.id}
-                          className="rounded-xl border border-black/10 bg-white/80 p-3 dark:border-white/10 dark:bg-zinc-900/70"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium">{session.book.name}</p>
-                              <p className="mt-1 text-xs opacity-70">
-                                {completedPages}/{session.book.totalPages} trang đã dịch
-                              </p>
-                            </div>
-                            <button
-                              onClick={() => removeDraftSession(session.book.id)}
-                              className="rounded-lg p-1 text-zinc-500 hover:bg-black/5 hover:text-red-500 dark:hover:bg-white/5"
-                              aria-label={`Xóa session ${session.book.name}`}
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
-
-                          <button
-                            onClick={() => openDraftSession(session)}
-                            className="mt-3 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-                          >
-                            Quay lại màn dịch
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              <div className="mt-12 grid grid-cols-1 gap-6 text-sm opacity-60 sm:grid-cols-3">
-                <div>
-                  <div className="mb-1 font-bold">Webhook</div>
-                  Auto FLow
-                </div>
-                <div>
-                  <div className="mb-1 font-bold">Bilingual</div>
-                  Xem song song
-                </div>
-                <div>
-                  <div className="mb-1 font-bold">Export</div>
-                  PDF đã dịch
-                </div>
-              </div>
-            </motion.div>
-          </div>
+          <BookTranslationLanding
+            draftSessions={draftSessions}
+            uploadNotice={uploadNotice}
+            onFileUpload={handleFileUpload}
+            onUseSampleData={openSampleBook}
+            onOpenDraftSession={openDraftSession}
+            onRemoveDraftSession={removeDraftSession}
+          />
         ) : (
           <>
             <aside className="hidden md:flex md:w-72 flex-col border-r border-black/10 bg-white/50 backdrop-blur-sm dark:border-white/10 dark:bg-zinc-900/50">

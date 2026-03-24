@@ -1,9 +1,9 @@
-import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
+import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { RootLayout } from "@/app/layouts/RootLayout";
-import ModuleHubPage from "@/app/pages/ModuleHubPage";
+import HomePage from "@/app/pages/HomePage";
 import NotFoundPage from "@/app/pages/NotFoundPage";
 import { appModules } from "@/app/router/modules";
-import { routePaths, routeSegments } from "@/app/router/paths";
+import { routePaths } from "@/app/router/paths";
 
 const router = createBrowserRouter([
   {
@@ -12,11 +12,7 @@ const router = createBrowserRouter([
     children: [
       {
         index: true,
-        element: <Navigate to={routePaths.bookTranslation} replace />,
-      },
-      {
-        path: routeSegments.modules,
-        element: <ModuleHubPage />,
+        element: <HomePage />,
       },
       ...appModules.flatMap((moduleItem) => moduleItem.routes),
       {
