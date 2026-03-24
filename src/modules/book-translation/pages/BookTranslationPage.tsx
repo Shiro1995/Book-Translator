@@ -144,6 +144,21 @@ function getSettingsFromBook(book: Book): TranslationSettings {
   };
 }
 
+function isInteractiveShortcutTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tagName = target.tagName;
+
+  return (
+    target.isContentEditable ||
+    tagName === "INPUT" ||
+    tagName === "TEXTAREA" ||
+    tagName === "SELECT"
+  );
+}
+
 export default function App() {
   const navigate = useNavigate();
   const [book, setBook] = useState<Book | null>(null);
@@ -175,6 +190,8 @@ export default function App() {
   const bookRef = useRef<Book | null>(book);
   const settingsRef = useRef(settings);
   const autoTranslateHadFailureRef = useRef(false);
+  const desktopPageButtonRefs = useRef<Record<number, HTMLButtonElement | null>>({});
+  const keyboardPageNavigationRef = useRef(false);
 
   useEffect(() => {
     bookRef.current = book;
@@ -951,6 +968,65 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!book || !isReaderOpen) {
+      return;
+    }
+
+    const handleReaderKeyboardNavigation = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        isInteractiveShortcutTarget(event.target)
+      ) {
+        return;
+      }
+
+      if (event.key === "ArrowDown" && canGoToNextPage) {
+        event.preventDefault();
+        keyboardPageNavigationRef.current = true;
+        goToNextPage();
+      }
+
+      if (event.key === "ArrowUp" && canGoToPreviousPage) {
+        event.preventDefault();
+        keyboardPageNavigationRef.current = true;
+        goToPreviousPage();
+      }
+    };
+
+    window.addEventListener("keydown", handleReaderKeyboardNavigation);
+
+    return () => {
+      window.removeEventListener("keydown", handleReaderKeyboardNavigation);
+    };
+  }, [book, canGoToNextPage, canGoToPreviousPage, isReaderOpen]);
+
+  useEffect(() => {
+    if (!isReaderOpen) {
+      keyboardPageNavigationRef.current = false;
+      return;
+    }
+
+    const activeDesktopButton = desktopPageButtonRefs.current[currentPageIdx];
+    if (!activeDesktopButton) {
+      return;
+    }
+
+    activeDesktopButton.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+    });
+
+    if (keyboardPageNavigationRef.current) {
+      activeDesktopButton.focus({ preventScroll: true });
+      keyboardPageNavigationRef.current = false;
+    }
+  }, [currentPageIdx, currentDesktopPageListPage, isReaderOpen]);
+
+  useEffect(() => {
     if (filteredPages.length === 0) {
       setDesktopPageListPage(1);
       return;
@@ -1173,14 +1249,17 @@ export default function App() {
                     return (
                       <button
                         key={page.id}
+                        ref={(node) => {
+                          desktopPageButtonRefs.current[idx] = node;
+                        }}
                         onClick={() => {
                           setCurrentPageIdx(idx);
                           setIsMobilePagesOpen(false);
                         }}
                         className={cn(
-                          "group flex w-full items-center justify-between rounded-xl p-3 text-sm transition-all",
+                          "group flex w-full items-center justify-between rounded-xl border border-transparent p-3 text-sm outline-none transition-all focus-visible:ring-2 focus-visible:ring-emerald-500/40",
                           currentPageIdx === idx
-                            ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"
+                            ? "border-black/15 bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"
                             : "hover:bg-black/5 dark:hover:bg-white/5",
                         )}
                       >
