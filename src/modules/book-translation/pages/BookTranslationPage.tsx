@@ -184,6 +184,8 @@ export default function App() {
   const [retranslateConfirmIdx, setRetranslateConfirmIdx] = useState<number | null>(null);
   const [draftSessions, setDraftSessions] = useState<DraftSession[]>([]);
   const [hasRestoredDraftState, setHasRestoredDraftState] = useState(false);
+  const [isImportingBook, setIsImportingBook] = useState(false);
+  const [importingFileName, setImportingFileName] = useState<string | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [pageFilter, setPageFilter] = useState<PageFilter>("all");
   const [autoStartPage, setAutoStartPage] = useState(1);
@@ -204,6 +206,7 @@ export default function App() {
   const desktopPageButtonRefs = useRef<Record<number, HTMLButtonElement | null>>({});
   const keyboardPageNavigationRef = useRef(false);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
+  const isImportingBookRef = useRef(false);
 
   useEffect(() => {
     bookRef.current = book;
@@ -440,6 +443,10 @@ export default function App() {
   };
 
   const importBookFile = async (file: File, options?: { openExistingSession?: boolean }) => {
+    if (isImportingBookRef.current) {
+      return;
+    }
+
     const existingSession = draftSessions.find(
       (session) => session.book.name === file.name && session.book.size === file.size,
     );
@@ -454,12 +461,28 @@ export default function App() {
       return;
     }
 
+    const normalizedFileName = file.name.toLowerCase();
+
+    if (
+      !normalizedFileName.endsWith(".pdf") &&
+      !normalizedFileName.endsWith(".docx") &&
+      !normalizedFileName.endsWith(".doc")
+    ) {
+      alert("Äá»‹nh dáº¡ng file chÆ°a Ä‘Æ°á»£c há»— trá»£");
+      return;
+    }
+
+    isImportingBookRef.current = true;
+    setIsImportingBook(true);
+    setImportingFileName(file.name);
+    setUploadNotice(null);
+
     try {
       let result;
 
-      if (file.name.endsWith(".pdf")) {
+      if (normalizedFileName.endsWith(".pdf")) {
         result = await parsePDF(file);
-      } else if (file.name.endsWith(".docx") || file.name.endsWith(".doc")) {
+      } else if (normalizedFileName.endsWith(".docx") || normalizedFileName.endsWith(".doc")) {
         result = await parseDOCX(file);
       } else {
         alert("Định dạng file chưa được hỗ trợ");
@@ -481,10 +504,19 @@ export default function App() {
     } catch (error) {
       console.error(error);
       alert("Không thể đọc file");
+    } finally {
+      isImportingBookRef.current = false;
+      setIsImportingBook(false);
+      setImportingFileName(null);
     }
   };
 
   const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    if (isImportingBookRef.current) {
+      e.target.value = "";
+      return;
+    }
+
     const file = e.target.files?.[0];
     if (!file) {
       return;
@@ -1185,14 +1217,22 @@ export default function App() {
             </button>
 
             {!book || !isReaderOpen ? (
-              <label className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-emerald-900/20 transition-all hover:bg-emerald-700 sm:w-auto">
-                <Upload size={16} />
+              <label
+                className={cn(
+                  "flex w-full items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-white shadow-lg shadow-emerald-900/20 transition-all sm:w-auto",
+                  isImportingBook
+                    ? "cursor-not-allowed bg-emerald-600/70 opacity-80"
+                    : "cursor-pointer bg-emerald-600 hover:bg-emerald-700",
+                )}
+              >
+                {isImportingBook ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
                 Tải sách lên
                 <input
                   type="file"
                   className="hidden"
                   onChange={handleFileUpload}
                   accept=".pdf,.docx,.doc"
+                  disabled={isImportingBook}
                 />
               </label>
             ) : (
@@ -1419,6 +1459,8 @@ export default function App() {
         {!book || !isReaderOpen ? (
           <BookTranslationLanding
             draftSessions={draftSessions}
+            isImportingBook={isImportingBook}
+            importingFileName={importingFileName}
             uploadNotice={uploadNotice}
             onFileUpload={handleFileUpload}
             onUseSampleData={openSampleBook}

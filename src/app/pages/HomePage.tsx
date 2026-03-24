@@ -124,6 +124,8 @@ export default function HomePage() {
       <main className="flex flex-1 bg-[#F5F5F0] text-[#141414] dark:bg-[#0A0A0A] dark:text-[#E4E3E0]">
         <BookTranslationLanding
           draftSessions={draftSessions}
+          isImportingBook={false}
+          importingFileName={null}
           uploadNotice={null}
           onFileUpload={handleFileUpload}
           onUseSampleData={handleUseSampleData}
