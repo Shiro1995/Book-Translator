@@ -35,6 +35,8 @@ const DRAFT_BOOK_STORAGE_KEY = "book-translator:draft-book";
 const DRAFT_UI_STORAGE_KEY = "book-translator:draft-ui";
 const DRAFT_SESSIONS_STORAGE_KEY = "book-translator:draft-sessions";
 const MAX_DRAFT_SESSIONS = 3;
+const AUTO_TRANSLATE_PARALLEL_LIMIT = 3;
+const AUTO_TRANSLATE_INITIAL_STAGGER_MS = 5_000;
 const PAGE_FILTER_OPTIONS = ["all", "idle", "error", "completed", "edited"] as const;
 
 type PageFilter = (typeof PAGE_FILTER_OPTIONS)[number];
@@ -118,6 +120,10 @@ function isPageEdited(page: Page) {
   return translated !== page.versionHistory[0].trim();
 }
 
+function isPageAlreadyTranslated(page: Page) {
+  return page.status === "completed" || page.translatedText.trim().length > 0;
+}
+
 function matchesPageFilter(page: Page, filter: PageFilter) {
   switch (filter) {
     case "idle":
@@ -171,7 +177,7 @@ export default function App() {
   const [pageFilter, setPageFilter] = useState<PageFilter>("all");
   const [autoStartPage, setAutoStartPage] = useState(1);
   const [settings, setSettings] = useState<TranslationSettings>({
-    model: "gemini-2.5-pro",
+    model: "gemini-3-flash-preview",
     sourceLang: "English",
     targetLang: "Vietnamese",
     style: "natural",
@@ -182,6 +188,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const bookRef = useRef<Book | null>(book);
   const settingsRef = useRef(settings);
+  const autoTranslateHadFailureRef = useRef(false);
 
   useEffect(() => {
     bookRef.current = book;
@@ -190,6 +197,16 @@ export default function App() {
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+
+  useEffect(() => {
+    autoTranslateHadFailureRef.current = book?.pages.some((page) => page.status === "error") ?? false;
+  }, [book?.id]);
+
+  useEffect(() => {
+    if (book?.pages.some((page) => page.status === "error")) {
+      autoTranslateHadFailureRef.current = true;
+    }
+  }, [book]);
 
   useEffect(() => {
     setBook((prev) => {
@@ -413,7 +430,7 @@ export default function App() {
     }
 
     const page = currentBook.pages[idx];
-    if (!page) {
+    if (!page || page.status === "translating") {
       return;
     }
 
@@ -491,46 +508,125 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null;
 
     const run = async () => {
       if (!isAutoTranslating || !bookRef.current || !isReaderOpen) {
         return;
       }
 
-      const totalPages = bookRef.current?.pages.length ?? 0;
-      const startIdx = Math.max(0, Math.min(autoStartPage - 1, Math.max(0, totalPages - 1)));
+      const totalPages = bookRef.current.pages.length;
+      let nextIdx = Math.max(0, Math.min(autoStartPage - 1, Math.max(0, totalPages - 1)));
+      let shouldTranslateSequentially = autoTranslateHadFailureRef.current;
+      let launchedCount = 0;
+      const inFlight = new Set<Promise<boolean>>();
 
-      for (let i = startIdx; i < totalPages; i += 1) {
-        if (!active || !isAutoTranslating) {
+      const waitBeforeNextLaunch = async () => {
+        if (
+          shouldTranslateSequentially ||
+          launchedCount === 0 ||
+          launchedCount >= AUTO_TRANSLATE_PARALLEL_LIMIT
+        ) {
+          return;
+        }
+
+        await new Promise<void>((resolve) => {
+          pendingTimer = setTimeout(() => {
+            pendingTimer = null;
+            resolve();
+          }, AUTO_TRANSLATE_INITIAL_STAGGER_MS);
+        });
+      };
+
+      const getNextPageIndex = () => {
+        while (nextIdx < totalPages) {
+          const pageIdx = nextIdx;
+          const currentPage = bookRef.current?.pages[pageIdx];
+          nextIdx += 1;
+
+          if (!currentPage || currentPage.status === "translating" || isPageAlreadyTranslated(currentPage)) {
+            continue;
+          }
+
+          return pageIdx;
+        }
+
+        return null;
+      };
+
+      const launchTranslation = (pageIdx: number) => {
+        const task = translatePage(pageIdx)
+          .then(() => true)
+          .catch((error) => {
+            console.error(`Error at page ${pageIdx + 1}`, error);
+            return false;
+          })
+          .then((success) => {
+            if (!success) {
+              shouldTranslateSequentially = true;
+              autoTranslateHadFailureRef.current = true;
+            }
+
+            return success;
+          });
+
+        inFlight.add(task);
+        void task.finally(() => {
+          inFlight.delete(task);
+        });
+      };
+
+      while (active && nextIdx < totalPages) {
+        const batchSize = shouldTranslateSequentially ? 1 : AUTO_TRANSLATE_PARALLEL_LIMIT;
+        let startedNewTask = false;
+
+        while (active && inFlight.size < batchSize) {
+          const pageIdx = getNextPageIndex();
+          if (pageIdx === null) {
+            break;
+          }
+
+          await waitBeforeNextLaunch();
+          if (!active) {
+            break;
+          }
+
+          launchTranslation(pageIdx);
+          launchedCount += 1;
+          startedNewTask = true;
+        }
+
+        if (!active) {
           break;
         }
 
-        const currentBook = bookRef.current;
-        if (!currentBook?.pages[i]) {
+        if (inFlight.size === 0) {
+          break;
+        }
+
+        if (startedNewTask && inFlight.size < batchSize && nextIdx >= totalPages) {
           continue;
         }
 
-        const currentPage = currentBook.pages[i];
-        const alreadyTranslated =
-          currentPage.status === "completed" || currentPage.translatedText.trim().length > 0;
-        if (alreadyTranslated) {
-          continue;
-        }
-
-        try {
-          await translatePage(i);
-        } catch (error) {
-          console.error(`Error at page ${i + 1}`, error);
-        }
+        await Promise.race(Array.from(inFlight));
       }
 
-      setIsAutoTranslating(false);
+      while (active && inFlight.size > 0) {
+        await Promise.race(Array.from(inFlight));
+      }
+
+      if (active) {
+        setIsAutoTranslating(false);
+      }
     };
 
     void run();
 
     return () => {
       active = false;
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+      }
     };
   }, [isAutoTranslating, isReaderOpen, autoStartPage]);
 
@@ -1335,8 +1431,8 @@ export default function App() {
                       value={settings.model}
                       onChange={(e) => setSettings({ ...settings, model: e.target.value })}
                     >
-                      <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
                       <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
+                      <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
                       <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                     </select>
                   </div>
@@ -1610,8 +1706,8 @@ export default function App() {
                         value={settings.model}
                         onChange={(e) => setSettings({ ...settings, model: e.target.value })}
                       >
-                        <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
                         <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
+                        <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
                         <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                       </select>
                     </div>

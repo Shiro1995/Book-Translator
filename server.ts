@@ -211,7 +211,7 @@ async function handleTranslate(req: Request<object, object, TranslationRequestBo
   }
 
   const settings: TranslationSettings = {
-    model: req.body?.settings?.model?.trim() || "gemini-2.5-pro",
+    model: req.body?.settings?.model?.trim() || "gemini-3-flash-preview",
     sourceLang: req.body?.settings?.sourceLang?.trim() || "auto-detect",
     targetLang: req.body?.settings?.targetLang?.trim() || "Vietnamese",
     style: req.body?.settings?.style ?? "natural",

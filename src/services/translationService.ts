@@ -9,8 +9,8 @@ interface TranslateApiResponse {
   code?: string;
 }
 
-const PRIMARY_MODEL = "gemini-2.5-pro";
-const SECONDARY_MODEL = "gemini-3-flash-preview";
+const PRIMARY_MODEL = "gemini-3-flash-preview";
+const SECONDARY_MODEL = "gemini-2.5-pro";
 const TERTIARY_MODEL = "gemini-2.5-flash";
 const FALLBACK_MODELS = [SECONDARY_MODEL, TERTIARY_MODEL] as const;
 const PRIMARY_MODEL_RETRY_INTERVAL_MS = 60_000;
