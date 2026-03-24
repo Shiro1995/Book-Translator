@@ -1,4 +1,5 @@
 import { TranslationSettings } from "../types";
+import { normalizeUserFacingText } from "../utils/text";
 
 interface TranslateApiResponse {
   translatedText?: string;
@@ -80,7 +81,7 @@ export class TranslationService {
           }
 
           return {
-            translatedText: data.translatedText,
+            translatedText: normalizeUserFacingText(data.translatedText),
             usedModel: model,
             attemptedModels,
           };

@@ -6,6 +6,7 @@ import multer from "multer";
 import fs from "fs";
 import { promises as fsPromises } from "fs";
 import mammoth from "mammoth";
+import { normalizeUserFacingText } from "./src/modules/book-translation/utils/text";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const UPLOAD_DIR = "uploads";
@@ -26,7 +27,6 @@ type TranslationStyle = "natural" | "literal" | "literary" | "academic";
 
 interface TranslationSettings {
   model: string;
-  sourceLang: string;
   targetLang: string;
   style: TranslationStyle;
   glossary: string;
@@ -212,7 +212,6 @@ async function handleTranslate(req: Request<object, object, TranslationRequestBo
 
   const settings: TranslationSettings = {
     model: req.body?.settings?.model?.trim() || "gemini-3-flash-preview",
-    sourceLang: req.body?.settings?.sourceLang?.trim() || "auto-detect",
     targetLang: req.body?.settings?.targetLang?.trim() || "Vietnamese",
     style: req.body?.settings?.style ?? "natural",
     glossary: req.body?.settings?.glossary?.trim() ?? "",
@@ -231,7 +230,6 @@ async function handleTranslate(req: Request<object, object, TranslationRequestBo
   const webhookPayload = {
     text,
     model: settings.model,
-    sourceLang: settings.sourceLang,
     targetLang: settings.targetLang,
     style: settings.style,
     glossary: settings.glossary,
@@ -299,7 +297,12 @@ async function handleTranslate(req: Request<object, object, TranslationRequestBo
       });
     }
 
-    if (isVietnameseTarget(settings.targetLang) && looksLikeVietnameseMissingDiacritics(translatedText)) {
+    const normalizedTranslatedText = normalizeUserFacingText(translatedText);
+
+    if (
+      isVietnameseTarget(settings.targetLang) &&
+      looksLikeVietnameseMissingDiacritics(normalizedTranslatedText)
+    ) {
       return res.status(502).json({
         code: "E_VIETNAMESE_DIACRITICS",
         error: "translated Vietnamese text appears to be missing diacritics",
@@ -309,7 +312,7 @@ async function handleTranslate(req: Request<object, object, TranslationRequestBo
     }
 
     return res.json({
-      translatedText,
+      translatedText: normalizedTranslatedText,
     });
   } catch (error) {
     console.error("Translation webhook error:", error);

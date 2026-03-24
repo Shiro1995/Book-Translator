@@ -37,6 +37,7 @@ import {
 import { type Book, type Page, type PromptPreset, type TranslationSettings } from "../types";
 import { parseDOCX, parsePDF } from "../services/fileService";
 import { translationService } from "../services/translationService";
+import { normalizeUserFacingText } from "../utils/text";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 
@@ -46,6 +47,7 @@ function cn(...inputs: ClassValue[]) {
 
 const AUTO_TRANSLATE_PARALLEL_LIMIT = 3;
 const AUTO_TRANSLATE_INITIAL_STAGGER_MS = 5_000;
+const DESKTOP_PAGE_LIST_SIZE = 15;
 const PAGE_FILTER_OPTIONS = ["all", "idle", "error", "completed", "edited"] as const;
 
 type PageFilter = (typeof PAGE_FILTER_OPTIONS)[number];
@@ -134,7 +136,6 @@ function buildEffectiveSettings(settings: TranslationSettings): TranslationSetti
 function getSettingsFromBook(book: Book): TranslationSettings {
   return {
     model: book.model,
-    sourceLang: book.sourceLang,
     targetLang: book.targetLang,
     style: book.style,
     promptPreset: book.promptPreset ?? "reader",
@@ -160,9 +161,10 @@ export default function App() {
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [pageFilter, setPageFilter] = useState<PageFilter>("all");
   const [autoStartPage, setAutoStartPage] = useState(1);
+  const [desktopPageListPage, setDesktopPageListPage] = useState(1);
+  const [isOriginalHidden, setIsOriginalHidden] = useState(false);
   const [settings, setSettings] = useState<TranslationSettings>({
     model: "gemini-3-flash-preview",
-    sourceLang: "English",
     targetLang: "Vietnamese",
     style: "natural",
     promptPreset: "reader",
@@ -205,7 +207,6 @@ export default function App() {
 
       if (
         prev.model === nextBook.model &&
-        prev.sourceLang === nextBook.sourceLang &&
         prev.targetLang === nextBook.targetLang &&
         prev.style === nextBook.style &&
         prev.promptPreset === nextBook.promptPreset &&
@@ -543,6 +544,7 @@ export default function App() {
     }
   };
 
+
   useEffect(() => {
     let active = true;
     let pendingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -682,21 +684,7 @@ export default function App() {
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#39;");
 
-    const repairLikelyMojibake = (value: string) => {
-      if (!/(Ã.|Â.|Æ.|áº|á»|Ä.|Å.)/.test(value)) {
-        return value;
-      }
-
-      try {
-        const bytes = Uint8Array.from(value, (ch) => ch.charCodeAt(0) & 0xff);
-        const recovered = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-        return recovered.includes("\uFFFD") ? value : recovered;
-      } catch {
-        return value;
-      }
-    };
-
-    const normalizeForPdf = (value: string) => repairLikelyMojibake(value).normalize("NFC");
+    const normalizeForPdf = (value: string) => normalizeUserFacingText(value);
     const pagesToExport = book.pages.filter(
       (page) => normalizeForPdf(page.translatedText ?? "").trim().length > 0,
     );
@@ -732,10 +720,6 @@ export default function App() {
       const blocks: Block[] = [
         { kind: "title", text: "BẢN DỊCH TÀI LIỆU" },
         { kind: "body", text: normalizeForPdf(book.name) },
-        {
-          kind: "body",
-          text: `Ngôn ngữ: ${settings.sourceLang} -> ${settings.targetLang}`,
-        },
         {
           kind: "body",
           text: `Ngày xuất: ${new Date().toLocaleDateString("vi-VN")}`,
@@ -925,7 +909,23 @@ export default function App() {
       page.translatedText.toLowerCase().includes(needle);
 
     return matchesSearch && matchesPageFilter(page, pageFilter);
-  });
+  }) ?? [];
+  const desktopPageListPageCount = Math.max(
+    1,
+    Math.ceil(filteredPages.length / DESKTOP_PAGE_LIST_SIZE),
+  );
+  const currentDesktopPageListPage = Math.min(desktopPageListPage, desktopPageListPageCount);
+  const desktopPageListStart = (currentDesktopPageListPage - 1) * DESKTOP_PAGE_LIST_SIZE;
+  const desktopPaginatedPages = filteredPages.slice(
+    desktopPageListStart,
+    desktopPageListStart + DESKTOP_PAGE_LIST_SIZE,
+  );
+  const filteredPageKey = filteredPages.map((page) => page.id).join(",");
+  const originalText = normalizeUserFacingText(currentPage?.originalText ?? "");
+  const translatedText = normalizeUserFacingText(currentPage?.translatedText ?? "");
+  const readingFontStyle = {
+    fontFamily: '"Segoe UI", Arial, "Helvetica Neue", system-ui, sans-serif',
+  } as const;
   const pageFilterCounts = book
     ? {
       all: book.pages.length,
@@ -949,6 +949,30 @@ export default function App() {
   const goToNextPage = () => {
     setCurrentPageIdx((prev) => Math.min((book?.totalPages ?? 1) - 1, prev + 1));
   };
+
+  useEffect(() => {
+    if (filteredPages.length === 0) {
+      setDesktopPageListPage(1);
+      return;
+    }
+
+    setDesktopPageListPage((prev) => Math.min(prev, desktopPageListPageCount));
+  }, [desktopPageListPageCount, filteredPageKey]);
+
+  useEffect(() => {
+    if (filteredPages.length === 0) {
+      return;
+    }
+
+    const currentFilteredIndex = filteredPages.findIndex((page) => page.id === currentPage?.id);
+    if (currentFilteredIndex < 0) {
+      setDesktopPageListPage(1);
+      return;
+    }
+
+    const nextPage = Math.floor(currentFilteredIndex / DESKTOP_PAGE_LIST_SIZE) + 1;
+    setDesktopPageListPage((prev) => (prev === nextPage ? prev : nextPage));
+  }, [currentPage?.id, filteredPageKey]);
 
   const exitReader = () => {
     setIsAutoTranslating(false);
@@ -1078,7 +1102,7 @@ export default function App() {
         )}
       </header>
 
-      <main className="flex flex-1 overflow-hidden">
+      <main className="flex flex-1 overflow-hidden md:overflow-visible">
         {!book || !isReaderOpen ? (
           <BookTranslationLanding
             draftSessions={draftSessions}
@@ -1090,7 +1114,7 @@ export default function App() {
           />
         ) : (
           <>
-            <aside className="hidden md:flex md:w-72 flex-col border-r border-black/10 bg-white/50 backdrop-blur-sm dark:border-white/10 dark:bg-zinc-900/50">
+            <aside className="hidden border-r border-black/10 bg-white/50 backdrop-blur-sm dark:border-white/10 dark:bg-zinc-900/50 md:sticky md:top-24 md:flex md:h-[calc(100vh-6rem)] md:w-72 md:self-start md:shrink-0 md:flex-col">
               <div className="border-b border-black/10 p-4 dark:border-white/10">
                 <div className="relative">
                   <Search
@@ -1130,11 +1154,20 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+                <label className="mt-3 flex items-center gap-2 text-xs font-medium text-zinc-600 dark:text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={isOriginalHidden}
+                    onChange={(e) => setIsOriginalHidden(e.target.checked)}
+                    className="h-4 w-4 rounded border-black/20 text-emerald-600 focus:ring-emerald-500 dark:border-white/20"
+                  />
+                  Ẩn bản gốc
+                </label>
               </div>
 
-              <div className="flex-1 space-y-1 overflow-y-auto p-2">
-                {filteredPages?.length ? (
-                  filteredPages.map((page) => {
+              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+                {filteredPages.length ? (
+                  desktopPaginatedPages.map((page) => {
                     const idx = book.pages.findIndex((item) => item.id === page.id);
 
                     return (
@@ -1190,24 +1223,62 @@ export default function App() {
                 )}
               </div>
 
-              <div className="border-t border-black/10 bg-black/5 p-4 dark:border-white/10 dark:bg-white/5">
-                <div className="mb-2 flex items-center justify-between text-xs">
-                  <span>Tiến độ dịch</span>
-                  <span>
-                    {book.pages.filter((page) => matchesPageFilter(page, "completed")).length} /{" "}
-                    {book.totalPages} trang
-                  </span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
-                  <div
-                    className="h-full bg-emerald-500 transition-all duration-500"
-                    style={{
-                      width: `${(book.pages.filter((page) => matchesPageFilter(page, "completed")).length /
-                        book.totalPages) *
-                        100
-                        }%`,
-                    }}
-                  />
+              <div className="mt-auto shrink-0">
+                {filteredPages.length > DESKTOP_PAGE_LIST_SIZE && (
+                  <div className="border-t border-black/10 px-4 py-3 dark:border-white/10">
+                    <div className="mb-2 text-[11px] opacity-60">
+                      {desktopPageListStart + 1}-
+                      {Math.min(
+                        desktopPageListStart + DESKTOP_PAGE_LIST_SIZE,
+                        filteredPages.length,
+                      )}{" "}
+                      / {filteredPages.length} trang
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        onClick={() => setDesktopPageListPage((prev) => Math.max(1, prev - 1))}
+                        disabled={currentDesktopPageListPage === 1}
+                        className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/5"
+                      >
+                        Trang trước
+                      </button>
+                      <div className="text-xs font-medium opacity-70">
+                        {currentDesktopPageListPage} / {desktopPageListPageCount}
+                      </div>
+                      <button
+                        onClick={() =>
+                          setDesktopPageListPage((prev) =>
+                            Math.min(desktopPageListPageCount, prev + 1),
+                          )
+                        }
+                        disabled={currentDesktopPageListPage === desktopPageListPageCount}
+                        className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/5"
+                      >
+                        Trang sau
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="border-t border-black/10 bg-black/5 p-4 dark:border-white/10 dark:bg-white/5">
+                  <div className="mb-2 flex items-center justify-between text-xs">
+                    <span>Tiến độ dịch</span>
+                    <span>
+                      {book.pages.filter((page) => matchesPageFilter(page, "completed")).length} /{" "}
+                      {book.totalPages} trang
+                    </span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                    <div
+                      className="h-full bg-emerald-500 transition-all duration-500"
+                      style={{
+                        width: `${(book.pages.filter((page) => matchesPageFilter(page, "completed")).length /
+                          book.totalPages) *
+                          100
+                          }%`,
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
             </aside>
@@ -1287,14 +1358,19 @@ export default function App() {
               </div>
 
               <div className="flex flex-1 flex-col gap-3 overflow-hidden p-3 md:gap-6 md:p-6 lg:flex-row">
-                <div className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-black/5 bg-white shadow-sm dark:border-white/5 dark:bg-zinc-900">
-                  <div className="border-b border-black/5 px-4 py-2 text-[10px] font-semibold uppercase tracking-widest opacity-50 dark:border-white/5">
-                    Bản gốc ({settings.sourceLang})
+                {!isOriginalHidden && (
+                  <div className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-black/5 bg-white shadow-sm dark:border-white/5 dark:bg-zinc-900">
+                    <div className="border-b border-black/5 px-4 py-2 text-[10px] font-semibold uppercase tracking-widest opacity-50 dark:border-white/5">
+                      Bản gốc
+                    </div>
+                    <div
+                      className="flex-1 overflow-y-auto p-4 text-base leading-relaxed md:p-8 md:text-lg"
+                      style={readingFontStyle}
+                    >
+                      {originalText}
+                    </div>
                   </div>
-                  <div className="flex-1 overflow-y-auto p-4 font-serif text-base leading-relaxed md:p-8 md:text-lg">
-                    {currentPage?.originalText}
-                  </div>
-                </div>
+                )}
 
                 <div className="relative flex flex-1 flex-col overflow-hidden rounded-2xl border border-black/5 bg-white shadow-sm dark:border-white/5 dark:bg-zinc-900">
                   <div className="flex items-center justify-between border-b border-black/5 px-4 py-2 text-[10px] font-semibold uppercase tracking-widest opacity-50 dark:border-white/5">
@@ -1313,7 +1389,10 @@ export default function App() {
                       )
                     )}
                   </div>
-                  <div className="relative flex flex-1 flex-col overflow-hidden p-4 font-serif text-base leading-relaxed md:p-8 md:text-lg">
+                  <div
+                    className="relative flex flex-1 flex-col overflow-hidden p-4 text-base leading-relaxed md:p-8 md:text-lg"
+                    style={readingFontStyle}
+                  >
                     {currentPage?.status === "translating" && (
                       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/80 backdrop-blur-sm dark:bg-zinc-900/80">
                         <Loader2 size={32} className="mb-4 animate-spin text-emerald-500" />
@@ -1366,7 +1445,7 @@ export default function App() {
                         </div>
                       )}
 
-                    {!currentPage?.translatedText && currentPage?.status === "idle" && (
+                    {!translatedText && currentPage?.status === "idle" && (
                       <div className="flex h-full flex-col items-center justify-center italic opacity-20">
                         <Edit3 size={48} className="mb-4" />
                         Chưa có bản dịch cho trang này
@@ -1397,7 +1476,7 @@ export default function App() {
             </div>
 
             {isSettingsOpen && (
-              <aside className="hidden overflow-y-auto border-l border-black/10 bg-white/50 p-6 dark:border-white/10 dark:bg-zinc-900/50 lg:block lg:w-80">
+              <aside className="hidden overflow-y-auto border-l border-black/10 bg-white/50 p-6 dark:border-white/10 dark:bg-zinc-900/50 lg:sticky lg:top-24 lg:block lg:h-[calc(100vh-6rem)] lg:w-80 lg:self-start">
                 <div className="mb-8 flex items-center gap-2 opacity-50">
                   <Settings size={18} />
                   <h3 className="text-sm font-bold uppercase tracking-widest">Cấu hình dịch</h3>
@@ -1581,6 +1660,15 @@ export default function App() {
                         </button>
                       ))}
                     </div>
+                    <label className="mt-3 flex items-center gap-2 text-xs font-medium text-zinc-600 dark:text-zinc-300">
+                      <input
+                        type="checkbox"
+                        checked={isOriginalHidden}
+                        onChange={(e) => setIsOriginalHidden(e.target.checked)}
+                        className="h-4 w-4 rounded border-black/20 text-emerald-600 focus:ring-emerald-500 dark:border-white/20"
+                      />
+                      Ẩn bản gốc
+                    </label>
                   </div>
 
                   <div className="flex-1 space-y-1 overflow-y-auto p-2">

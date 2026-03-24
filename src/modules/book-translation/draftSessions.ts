@@ -1,4 +1,5 @@
 import { type Book } from "./types";
+import { normalizeUserFacingText } from "./utils/text";
 
 export const DRAFT_BOOK_STORAGE_KEY = "book-translator:draft-book";
 export const DRAFT_UI_STORAGE_KEY = "book-translator:draft-ui";
@@ -42,6 +43,15 @@ export function restoreDraftSessions(): DraftSession[] {
       ...session,
       book: {
         ...session.book,
+        name: normalizeUserFacingText(session.book.name),
+        pages: session.book.pages.map((page) => ({
+          ...page,
+          originalText: normalizeUserFacingText(page.originalText),
+          translatedText: normalizeUserFacingText(page.translatedText),
+          versionHistory: (page.versionHistory ?? []).map((version) =>
+            normalizeUserFacingText(version),
+          ),
+        })),
         promptPreset: session.book.promptPreset ?? "reader",
       },
       currentPageIdx: clampPageIndex(session.book, session.currentPageIdx ?? 0),
@@ -67,6 +77,15 @@ export function restoreDraftSessions(): DraftSession[] {
     [],
     {
       ...parsedBook,
+      name: normalizeUserFacingText(parsedBook.name),
+      pages: parsedBook.pages.map((page) => ({
+        ...page,
+        originalText: normalizeUserFacingText(page.originalText),
+        translatedText: normalizeUserFacingText(page.translatedText),
+        versionHistory: (page.versionHistory ?? []).map((version) =>
+          normalizeUserFacingText(version),
+        ),
+      })),
       promptPreset: parsedBook.promptPreset ?? "reader",
     },
     typeof parsedUi?.currentPageIdx === "number" ? parsedUi.currentPageIdx : 0,
