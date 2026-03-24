@@ -891,77 +891,154 @@ export default function App() {
   });
   const pageFilterCounts = book
     ? {
-        all: book.pages.length,
-        idle: book.pages.filter((page) => matchesPageFilter(page, "idle")).length,
-        error: book.pages.filter((page) => matchesPageFilter(page, "error")).length,
-        completed: book.pages.filter((page) => matchesPageFilter(page, "completed")).length,
-        edited: book.pages.filter((page) => matchesPageFilter(page, "edited")).length,
-      }
+      all: book.pages.length,
+      idle: book.pages.filter((page) => matchesPageFilter(page, "idle")).length,
+      error: book.pages.filter((page) => matchesPageFilter(page, "error")).length,
+      completed: book.pages.filter((page) => matchesPageFilter(page, "completed")).length,
+      edited: book.pages.filter((page) => matchesPageFilter(page, "edited")).length,
+    }
     : null;
 
   const hasDraftSession = draftSessions.length > 0;
   const activeDraftSession =
     draftSessions.find((session) => session.book.id === book?.id) ?? draftSessions[0] ?? null;
+  const canGoToPreviousPage = Boolean(book && currentPageIdx > 0);
+  const canGoToNextPage = Boolean(book && currentPageIdx < book.totalPages - 1);
+
+  const goToPreviousPage = () => {
+    setCurrentPageIdx((prev) => Math.max(0, prev - 1));
+  };
+
+  const goToNextPage = () => {
+    setCurrentPageIdx((prev) => Math.min((book?.totalPages ?? 1) - 1, prev + 1));
+  };
+
+  const exitReader = () => {
+    setIsAutoTranslating(false);
+    setIsReaderOpen(false);
+  };
 
   return (
     <div className="flex min-h-screen flex-col bg-[#F5F5F0] text-[#141414] transition-colors duration-300 dark:bg-[#0A0A0A] dark:text-[#E4E3E0]">
-      <header className="sticky top-0 z-50 flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-black/10 bg-inherit px-4 py-3 backdrop-blur-md dark:border-white/10 md:h-16 md:flex-nowrap md:px-6 md:py-0">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 font-bold text-white">
-            L
+      <header className="sticky top-0 z-50 border-b border-black/10 bg-[#F5F5F0]/92 px-4 py-3 backdrop-blur-md dark:border-white/10 dark:bg-[#0A0A0A]/92 md:px-6">
+        <div className="flex min-h-10 w-full flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 font-bold text-white">
+              L
+            </div>
+            <h1 className="serif text-xl font-semibold italic tracking-tight">Book Translator</h1>
           </div>
-          <h1 className="serif text-xl font-semibold italic tracking-tight">Book Translator</h1>
+
+          <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto sm:gap-4">
+            <button
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className="rounded-full p-2 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+            >
+              {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
+
+            {!book || !isReaderOpen ? (
+              <label className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-emerald-900/20 transition-all hover:bg-emerald-700 sm:w-auto">
+                <Upload size={16} />
+                Tải sách lên
+                <input
+                  type="file"
+                  className="hidden"
+                  onChange={handleFileUpload}
+                  accept=".pdf,.docx,.doc"
+                />
+              </label>
+            ) : (
+              <div className="flex w-full items-center justify-end gap-2 sm:w-auto">
+                <button
+                  onClick={() => void exportPDF("translated")}
+                  disabled={isExporting}
+                  className="flex items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium hover:bg-black/5 disabled:opacity-50 dark:border-white/10 dark:bg-zinc-900"
+                >
+                  {isExporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                  {isExporting ? "Đang xuất..." : "Xuất PDF"}
+                </button>
+                <button
+                  onClick={exitReader}
+                  className="px-2 text-sm text-red-500 hover:underline"
+                >
+                  Quay lại
+                </button>
+              </div>
+            )}
+            {hasDraftSession && !isReaderOpen && (
+              <button
+                onClick={() => activeDraftSession && openDraftSession(activeDraftSession)}
+                className="w-full rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium hover:bg-black/5 sm:w-auto dark:border-white/10 dark:bg-zinc-900"
+              >
+                Quay lại bản đang dịch
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto sm:gap-4">
-          <button
-            onClick={() => setIsDarkMode(!isDarkMode)}
-            className="rounded-full p-2 transition-colors hover:bg-black/5 dark:hover:bg-white/5"
-          >
-            {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
-
-          {!book || !isReaderOpen ? (
-            <label className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-emerald-900/20 transition-all hover:bg-emerald-700 sm:w-auto">
-              <Upload size={16} />
-              Tải sách lên
-              <input
-                type="file"
-                className="hidden"
-                onChange={handleFileUpload}
-                accept=".pdf,.docx,.doc"
-              />
-            </label>
-          ) : (
-            <div className="flex w-full items-center justify-end gap-2 sm:w-auto">
+        {book && isReaderOpen && (
+          <div className="hidden w-full items-center justify-between gap-3 border-t border-black/10 pt-3 dark:border-white/10 md:flex">
+            <div className="flex items-center rounded-xl bg-black/5 p-1 dark:bg-white/5">
               <button
-                onClick={() => void exportPDF("translated")}
-                disabled={isExporting}
-                className="flex items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium hover:bg-black/5 disabled:opacity-50 dark:border-white/10 dark:bg-zinc-900"
+                onClick={goToPreviousPage}
+                disabled={!canGoToPreviousPage}
+                className="rounded-lg p-2 transition-all hover:bg-white disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-zinc-800"
               >
-                {isExporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-                {isExporting ? "Đang xuất..." : "Xuất PDF"}
+                <ChevronLeft size={18} />
               </button>
+              <div className="px-4 text-sm font-medium">
+                Trang {currentPageIdx + 1} / {book.totalPages}
+              </div>
               <button
-                onClick={() => {
-                  setIsAutoTranslating(false);
-                  setIsReaderOpen(false);
-                }}
-                className="px-2 text-sm text-red-500 hover:underline"
+                onClick={goToNextPage}
+                disabled={!canGoToNextPage}
+                className="rounded-lg p-2 transition-all hover:bg-white disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-zinc-800"
               >
-                Quay lại
+                <ChevronRight size={18} />
               </button>
             </div>
-          )}
-          {hasDraftSession && !isReaderOpen && (
-            <button
-              onClick={() => activeDraftSession && openDraftSession(activeDraftSession)}
-              className="w-full rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium hover:bg-black/5 sm:w-auto dark:border-white/10 dark:bg-zinc-900"
-            >
-              Quay lại bản đang dịch
-            </button>
-          )}
-        </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {isAutoTranslating ? (
+                <button
+                  onClick={() => setIsAutoTranslating(false)}
+                  className="flex items-center gap-2 rounded-full bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-600 hover:bg-amber-500/20"
+                >
+                  <Pause size={16} />
+                  Tam dung dich
+                </button>
+              ) : (
+                <button
+                  onClick={() => setIsAutoTranslating(true)}
+                  className="flex items-center gap-2 rounded-full bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-600 hover:bg-emerald-500/20"
+                >
+                  <Play size={16} />
+                  Dịch tự động
+                </button>
+              )}
+              <button
+                onClick={() => void translatePage(currentPageIdx)}
+                disabled={currentPage?.status === "translating"}
+                className="flex items-center gap-2 rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50 dark:bg-white dark:text-black"
+              >
+                {currentPage?.status === "translating" ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <RotateCcw size={16} />
+                )}
+                Dịch trang này
+              </button>
+              <button
+                onClick={() => setIsSettingsOpen((prev) => !prev)}
+                className="flex items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium hover:bg-black/5 dark:border-white/10 dark:bg-zinc-900"
+              >
+                <Settings size={16} />
+                {isSettingsOpen ? "Ẩn cài đặt" : "Hiển thị cài đặt"}
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       <main className="flex flex-1 overflow-hidden">
@@ -1231,23 +1308,23 @@ export default function App() {
             </aside>
 
             <div className="flex flex-1 flex-col overflow-hidden">
-              <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 border-b border-black/10 bg-white/30 px-3 py-2 dark:border-white/10 dark:bg-zinc-900/30 md:h-14 md:flex-nowrap md:px-6 md:py-0">
+              <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 border-b border-black/10 bg-white/30 px-3 py-2 dark:border-white/10 dark:bg-zinc-900/30 md:hidden">
                 <div className="flex items-center gap-2 md:gap-4">
                   <button
                     onClick={() => setIsMobilePagesOpen(true)}
-                    className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-medium hover:bg-black/5 md:hidden dark:border-white/10 dark:bg-zinc-900"
+                    className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-medium hover:bg-black/5 dark:border-white/10 dark:bg-zinc-900"
                   >
                     Trang
                   </button>
                   <button
                     onClick={() => setIsMobileSettingsOpen(true)}
-                    className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-medium hover:bg-black/5 md:hidden dark:border-white/10 dark:bg-zinc-900"
+                    className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-xs font-medium hover:bg-black/5 dark:border-white/10 dark:bg-zinc-900"
                   >
                     Cài đặt
                   </button>
                   <div className="flex items-center rounded-lg bg-black/5 p-1 dark:bg-white/5">
                     <button
-                      onClick={() => setCurrentPageIdx(Math.max(0, currentPageIdx - 1))}
+                      onClick={goToPreviousPage}
                       className="rounded-md p-1.5 transition-all hover:bg-white dark:hover:bg-zinc-800"
                     >
                       <ChevronLeft size={18} />
@@ -1256,9 +1333,7 @@ export default function App() {
                       Trang {currentPageIdx + 1} / {book.totalPages}
                     </div>
                     <button
-                      onClick={() =>
-                        setCurrentPageIdx(Math.min(book.totalPages - 1, currentPageIdx + 1))
-                      }
+                      onClick={goToNextPage}
                       className="rounded-md p-1.5 transition-all hover:bg-white dark:hover:bg-zinc-800"
                     >
                       <ChevronRight size={18} />
