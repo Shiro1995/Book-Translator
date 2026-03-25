@@ -11,7 +11,7 @@ const USE_TRANSLATION_SERVICE = (process.env.USE_TRANSLATION_SERVICE ?? "true") 
 const BACKEND_API_URL = (
   process.env.BACKEND_API_URL ??
   process.env.TRANSLATION_SERVICE_URL ??
-  "http://127.0.0.1:8000"
+  "http://127.0.0.1:3100"
 ).replace(/\/+$/, "");
 
 function buildUpstreamUrl(requestPath: string) {
@@ -25,7 +25,15 @@ function copyRequestHeaders(req: Request) {
     if (!value) continue;
 
     const lowerKey = key.toLowerCase();
-    if (lowerKey === "host" || lowerKey === "connection") continue;
+    if (
+      lowerKey === "host" ||
+      lowerKey === "connection" ||
+      lowerKey === "content-length" ||
+      lowerKey === "transfer-encoding" ||
+      lowerKey === "expect"
+    ) {
+      continue;
+    }
 
     if (Array.isArray(value)) {
       headers.set(key, value.join(", "));

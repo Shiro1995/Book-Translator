@@ -7,6 +7,7 @@ import healthRoutes from "./routes/health.js";
 import translationJobRoutes from "./routes/translation-jobs.js";
 import documentJobRoutes from "./routes/document-jobs.js";
 import selectionInsightsRoutes from "./routes/selection-insights.js";
+import pdfExportRoutes from "./routes/pdf-export.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { rateLimiter } from "./middleware/rate-limiter.js";
@@ -40,11 +41,13 @@ export function createApp() {
   app.use("/api/translate", rateLimiter);
   app.use("/api/parse-docx", rateLimiter);
   app.use("/api/selection-insights", rateLimiter);
+  app.use("/api/export-pdf", rateLimiter);
 
   // ── Internal routes (job-based async API) ─────────────────────────
   app.use("/", healthRoutes);
   app.use("/translation-jobs", translationJobRoutes);
   app.use("/document-jobs", documentJobRoutes);
+  app.use("/pdf-export", pdfExportRoutes);
 
   // ── FE-compatible /api/* routes ───────────────────────────────────
   // These match the paths the frontend currently calls,
@@ -69,6 +72,7 @@ export function createApp() {
 
   // POST /api/selection-insights — selection AI analysis
   app.use("/api/selection-insights", selectionInsightsRoutes);
+  app.use("/api/export-pdf", pdfExportRoutes);
 
   // ── Error handling ────────────────────────────────────────────────
   app.use(errorHandler);

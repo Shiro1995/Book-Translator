@@ -7,13 +7,14 @@
 
 ---
 
-## FE gọi BE ở 3 endpoint duy nhất
+## FE gọi BE ở 4 endpoint duy nhất
 
 | # | Endpoint | FE Service | Mục đích |
 |---|----------|-----------|----------|
 | 1 | `POST /api/translate` | `services/translationService.ts` | Dịch text |
 | 2 | `POST /api/parse-docx` | `services/fileService.ts` | Parse DOCX → pages |
 | 3 | `POST /api/selection-insights` | `selection/services/selectionAiService.ts` | AI phân tích vùng chọn |
+| 4 | `POST /api/export-pdf` | `services/exportPdfService.ts` | Xuất PDF từ backend |
 
 ---
 

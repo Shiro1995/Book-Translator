@@ -25,6 +25,10 @@
 /api/parse-docx
   -> routes/document-jobs.ts
   -> services/document-parse.ts
+
+/api/export-pdf
+  -> routes/pdf-export.ts
+  -> services/pdf-export.ts
 ```
 
 ## Internal Structure

@@ -9,10 +9,12 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@types/pdfkit": "^0.17.5",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "mammoth": "^1.12.0",
     "multer": "^2.1.1",
+    "pdfkit": "^0.18.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {

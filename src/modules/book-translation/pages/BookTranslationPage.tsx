@@ -38,11 +38,10 @@ import {
 import { type Book, type Page, type PromptPreset, type TranslationSettings } from "../types";
 import { parseDOCX, parsePDF } from "../services/fileService";
 import { translationService } from "../services/translationService";
+import { exportPdfService } from "../services/exportPdfService";
 import { normalizeUserFacingText } from "../utils/text";
 import { OriginalTextSelectionPane } from "../selection/components/OriginalTextSelectionPane";
 import { TranslatedTextSelectionPopup } from "../selection/components/TranslatedTextSelectionPopup";
-import jsPDF from "jspdf";
-import html2canvas from "html2canvas";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -471,7 +470,7 @@ export default function App() {
       !normalizedFileName.endsWith(".docx") &&
       !normalizedFileName.endsWith(".doc")
     ) {
-      alert("Äá»‹nh dáº¡ng file chÆ°a Ä‘Æ°á»£c há»— trá»£");
+      alert("Định dạng file chưa được hỗ trợ");
       return;
     }
 
@@ -771,249 +770,22 @@ export default function App() {
     };
   }, [isAutoTranslating, isReaderOpen, autoStartPage]);
 
-  const exportPDF = async (
-    mode: "translated" | "bilingual",
-    selection?: ExportPageSelection,
-  ) => {
+  const exportPDF = async (selection?: ExportPageSelection) => {
     if (!book || isExporting) {
       return;
     }
 
     setIsExporting(true);
 
-    const escapeHtml = (value: string) =>
-      value
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-
-    const normalizeForPdf = (value: string) => normalizeUserFacingText(value);
-    const startPage = selection?.startPage ?? 1;
-    const endPage = selection?.endPage ?? book.totalPages;
-    const pagesToExport = book.pages.filter(
-      (page, idx) =>
-        idx + 1 >= startPage &&
-        idx + 1 <= endPage &&
-        normalizeForPdf(page.translatedText ?? "").trim().length > 0,
-    );
-
     try {
-      if (pagesToExport.length === 0) {
-        alert("Chưa có trang nào đã dịch để xuất PDF.");
-        return;
-      }
-
-      type Block = {
-        kind: "title" | "body";
-        text: string;
-      };
-
-      const PAGE_WIDTH_PX = 794;
-      const PAGE_HEIGHT_PX = 1123;
-      const PAGE_PADDING_Y_PX = 32;
-      const PAGE_PADDING_X_PX = 36;
-      const CONTENT_MAX_HEIGHT_PX = PAGE_HEIGHT_PX - PAGE_PADDING_Y_PX * 2;
-
-      const basePageStyle =
-        "width: 794px; height: 1123px; padding: 32px 36px; box-sizing: border-box; background: #ffffff; color: #111827; font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 16px; line-height: 1.65; white-space: normal; word-break: break-word; overflow: hidden;";
-      const contentStyle = "height: 100%; overflow: hidden;";
-
-      const blockToHtml = (block: Block) => {
-        if (block.kind === "title") {
-          return `<h1 style="margin: 0 0 8px; font-size: 28px; line-height: 1.3;">${escapeHtml(block.text)}</h1>`;
-        }
-        return `<p style="margin: 0 0 14px; white-space: pre-wrap;">${escapeHtml(block.text).replaceAll("\n", "<br />")}</p>`;
-      };
-
-      const blocks: Block[] = [
-        { kind: "title", text: "BẢN DỊCH TÀI LIỆU" },
-        { kind: "body", text: normalizeForPdf(book.name) },
-        {
-          kind: "body",
-          text: `Ngày xuất: ${new Date().toLocaleDateString("vi-VN")}`,
-        },
-      ];
-
-      blocks.splice(2, 0, {
-        kind: "body",
-        text:
-          startPage === 1 && endPage === book.totalPages
-            ? `Phạm vi trang: Tất cả (${startPage}-${endPage})`
-            : `Phạm vi trang: ${startPage}-${endPage}`,
-      });
-
-      for (let i = 0; i < pagesToExport.length; i += 1) {
-        const page = pagesToExport[i];
-        const translated = normalizeForPdf(page.translatedText || "(chưa dịch)");
-        const original = normalizeForPdf(page.originalText || "(trống)");
-
-        if (mode === "bilingual") {
-          blocks.push({ kind: "body", text: `Bản gốc:\n${original}` });
-          blocks.push({ kind: "body", text: "" });
-        }
-
-        blocks.push({ kind: "body", text: mode === "bilingual" ? `Bản dịch:\n${translated}` : translated });
-        blocks.push({ kind: "body", text: "" });
-      }
-
-      const measureRoot = document.createElement("div");
-      measureRoot.style.position = "fixed";
-      measureRoot.style.left = "-10000px";
-      measureRoot.style.top = "0";
-      measureRoot.style.width = `${PAGE_WIDTH_PX}px`;
-      measureRoot.style.height = `${PAGE_HEIGHT_PX}px`;
-      measureRoot.style.pointerEvents = "none";
-      measureRoot.innerHTML = `<div style="${basePageStyle}"><div id="pdf-content" style="${contentStyle}"></div></div>`;
-      document.body.appendChild(measureRoot);
-
-      const measureContent = measureRoot.querySelector("#pdf-content") as HTMLDivElement;
-      const pageHtmlList: string[] = [];
-      let currentParts: string[] = [];
-      const hasVisibleText = (html: string) =>
-        html
-          .replace(/<br\s*\/?>/gi, "\n")
-          .replace(/<[^>]+>/g, "")
-          .replace(/\s+/g, "")
-          .length > 0;
-
-      const fitsCurrentPage = (parts: string[]) => {
-        measureContent.innerHTML = parts.join("");
-        return measureContent.scrollHeight <= CONTENT_MAX_HEIGHT_PX;
-      };
-
-      const pushCurrentPage = () => {
-        if (currentParts.length === 0) {
-          return;
-        }
-        const merged = currentParts.join("");
-        if (!hasVisibleText(merged)) {
-          currentParts = [];
-          return;
-        }
-        pageHtmlList.push(`<div style="${basePageStyle}"><div style="${contentStyle}">${merged}</div></div>`);
-        currentParts = [];
-      };
-
-      const splitBodyToFit = (text: string) => {
-        const tokens = text.match(/\S+\s*/g) ?? [text];
-        let low = 1;
-        let high = tokens.length;
-        let best = 0;
-
-        while (low <= high) {
-          const mid = Math.floor((low + high) / 2);
-          const candidate = tokens.slice(0, mid).join("");
-          const candidateHtml = blockToHtml({ kind: "body", text: candidate });
-
-          if (fitsCurrentPage([...currentParts, candidateHtml])) {
-            best = mid;
-            low = mid + 1;
-          } else {
-            high = mid - 1;
-          }
-        }
-
-        const safeBest = best === 0 ? 1 : best;
-        const headRaw = tokens.slice(0, safeBest).join("");
-        const tailRaw = tokens.slice(safeBest).join("");
-        const head = headRaw.length > 0 ? headRaw.trimEnd() : text.slice(0, 1);
-        const tail = headRaw.length > 0 ? tailRaw.trimStart() : text.slice(1);
-        return { head, tail };
-      };
-
-      try {
-        for (const block of blocks) {
-          if (block.kind !== "body") {
-            const html = blockToHtml(block);
-            const candidate = [...currentParts, html];
-            if (fitsCurrentPage(candidate)) {
-              currentParts = candidate;
-              continue;
-            }
-
-            pushCurrentPage();
-            currentParts = [html];
-            continue;
-          }
-
-          let remaining = block.text;
-
-          while (remaining.length > 0) {
-            if (remaining.trim().length === 0) {
-              break;
-            }
-            const html = blockToHtml({ kind: "body", text: remaining });
-            const candidate = [...currentParts, html];
-
-            if (fitsCurrentPage(candidate)) {
-              currentParts = candidate;
-              remaining = "";
-              continue;
-            }
-
-            if (currentParts.length > 0) {
-              pushCurrentPage();
-              continue;
-            }
-
-            const { head, tail } = splitBodyToFit(remaining);
-            currentParts = [blockToHtml({ kind: "body", text: head })];
-            pushCurrentPage();
-            remaining = tail;
-          }
-        }
-
-        pushCurrentPage();
-      } finally {
-        measureRoot.remove();
-      }
-
-      const doc = new jsPDF({
-        unit: "pt",
-        format: "a4",
-        compress: true,
-      });
-      const pageWidthPt = doc.internal.pageSize.getWidth();
-      const pageHeightPt = doc.internal.pageSize.getHeight();
-
-      for (let i = 0; i < pageHtmlList.length; i += 1) {
-        const pageRoot = document.createElement("div");
-        pageRoot.style.position = "fixed";
-        pageRoot.style.left = "-10000px";
-        pageRoot.style.top = "0";
-        pageRoot.style.width = `${PAGE_WIDTH_PX}px`;
-        pageRoot.style.height = `${PAGE_HEIGHT_PX}px`;
-        pageRoot.style.pointerEvents = "none";
-        pageRoot.innerHTML = pageHtmlList[i];
-        document.body.appendChild(pageRoot);
-
-        try {
-          const pageCanvas = await html2canvas(pageRoot, {
-            scale: 2,
-            useCORS: true,
-            backgroundColor: "#ffffff",
-            logging: false,
-          });
-          const pageData = pageCanvas.toDataURL("image/jpeg", 0.95);
-
-          if (i > 0) {
-            doc.addPage();
-          }
-
-          doc.addImage(pageData, "JPEG", 0, 0, pageWidthPt, pageHeightPt, undefined, "FAST");
-        } finally {
-          pageRoot.remove();
-        }
-      }
-
-      const fileSuffix =
-        startPage === 1 && endPage === book.totalPages ? "" : `_pages-${startPage}-${endPage}`;
-      doc.save(`${book.name}_translated${fileSuffix}.pdf`);
+      await exportPdfService.exportBook(book, selection);
     } catch (error) {
       console.error("Export PDF failed", error);
-      alert("Không thể xuất PDF. Vui lòng thử lại.");
+      const message =
+        error instanceof Error && error.message
+          ? normalizeUserFacingText(error.message)
+          : "Không thể xuất PDF. Vui lòng thử lại.";
+      alert(message);
     } finally {
       setIsExporting(false);
     }
@@ -1236,7 +1008,7 @@ export default function App() {
         };
 
     setIsExportMenuOpen(false);
-    await exportPDF("translated", selection);
+    await exportPDF(selection);
   };
 
   return (
@@ -1313,10 +1085,10 @@ export default function App() {
                         onClick={() => setIsExportMenuOpen(false)}
                       />
                     <div className="fixed inset-x-3 bottom-3 z-[60] max-h-[80vh] overflow-y-auto rounded-2xl border border-black/10 bg-white p-4 shadow-2xl dark:border-white/10 dark:bg-zinc-900 md:absolute md:right-0 md:top-full md:bottom-auto md:inset-x-auto md:mt-2 md:w-[min(calc(100vw-2rem),24rem)] md:max-h-[70vh]">
-                      <div className="mb-3">
-                        <p className="text-sm font-semibold">Xuất PDF theo trang</p>
+                      <div className="mb-4 rounded-xl border border-black/10 bg-black/[0.03] px-3 py-3 text-sm dark:border-white/10 dark:bg-white/[0.03]">
+                        <p className="font-medium">Xuất PDF bản dịch</p>
                         <p className="mt-1 text-xs opacity-60">
-                          Mặc định là tất cả. Bạn có thể nhập khoảng trang muốn xuất.
+                          PDF hiện chỉ xuất nội dung tiếng Việt đã dịch.
                         </p>
                       </div>
 

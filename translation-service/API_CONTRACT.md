@@ -120,6 +120,35 @@ Errors:
 { code: string; error: string; details?: string }
 ```
 
+## `POST /api/export-pdf`
+
+Request: `multipart/form-data` with field `payload` containing JSON
+
+```ts
+{
+  bookName: string;
+  startPage: number;
+  endPage: number;
+  totalPages: number;
+  pages: Array<{
+    id: number;
+    translatedText: string;
+  }>;
+}
+```
+
+Success:
+
+- Response body: PDF binary
+- Response headers include:
+
+```ts
+{
+  "Content-Type": "application/pdf",
+  "Content-Disposition": "attachment; filename=..."
+}
+```
+
 ## Required Translation-Service Env
 
 ```env
