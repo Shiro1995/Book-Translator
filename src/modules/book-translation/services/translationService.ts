@@ -6,7 +6,7 @@ interface TranslateApiResponse {
   error?: string;
   details?: unknown;
   status?: number;
-  webhookUrl?: string;
+  providerUrl?: string;
   code?: string;
 }
 
@@ -101,7 +101,7 @@ export class TranslationService {
           `model=${model}`,
           data.status ? `status=${data.status}` : undefined,
           data.code ? `code=${data.code}` : undefined,
-          data.webhookUrl ? `webhook=${data.webhookUrl}` : undefined,
+          data.providerUrl ? `provider=${data.providerUrl}` : undefined,
         ]
           .filter(Boolean)
           .join(" | ");

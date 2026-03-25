@@ -102,6 +102,7 @@ export type DictionaryLookupSource =
   | "glossary"
   | "internal-dictionary"
   | "generated-helper"
+  | "vi-viet-dictionary"
   | "none";
 
 export type DictionaryLookupStatus = "success" | "partial" | "empty" | "unsupported";
@@ -122,6 +123,32 @@ export interface DictionaryLookupResult {
   relatedTerms: string[];
   message?: string;
   suggestion?: string;
+}
+
+export interface EnglishDictionaryAssist {
+  word: string;
+  pronunciation?: string;
+  partOfSpeech?: string;
+  definitions: string[];
+  example?: string;
+  source: "dictionaryapi.dev";
+}
+
+export type VietnameseAssistSource =
+  | "internal-provider"
+  | "laban"
+  | "ai-micro"
+  | "none";
+
+export type VietnameseAssistStatus = "success" | "empty" | "unsupported";
+
+export interface VietnameseAssistResult {
+  status: VietnameseAssistStatus;
+  source: VietnameseAssistSource;
+  title: string;
+  explanation?: string;
+  note?: string;
+  englishAssist?: EnglishDictionaryAssist;
 }
 
 export interface SelectionAiRequest {

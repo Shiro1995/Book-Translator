@@ -37,7 +37,9 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         PORT: 3100,
-        // N8N_WEBHOOK_URL and N8N_AUTH_TOKEN should be in .env file
+        TRANSLATION_PROVIDER: "cliproxy",
+        // Keep CLIPROXY_BASE_URL / CLIPROXY_API_KEY / CLIPROXY_MODEL in the
+        // translation-service .env file or inject them from your process manager.
         QUEUE_CONCURRENCY: 2,
         CACHE_TTL_SECONDS: 3600,
         CACHE_MAX_SIZE: 500,

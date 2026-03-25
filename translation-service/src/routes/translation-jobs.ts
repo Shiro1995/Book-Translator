@@ -1,17 +1,18 @@
 /**
- * Translation job routes — async job-based API.
+ * Translation job routes - async job-based API.
  *
- * POST /translation-jobs         → submit job
- * GET  /translation-jobs/:jobId  → poll status
- * GET  /translation-jobs/:jobId/result → get result
- * POST /translation-jobs/:jobId/cancel → cancel queued job
+ * POST /translation-jobs              -> submit job
+ * GET  /translation-jobs/:jobId       -> poll status
+ * GET  /translation-jobs/:jobId/result -> get result
+ * POST /translation-jobs/:jobId/cancel -> cancel queued job
  *
  * Also provides a synchronous compat endpoint for the existing web server:
- * POST /translate-sync → same interface as the old /api/translate
+ * POST /translation-jobs/sync -> same interface as the old /api/translate
  */
 
 import { Router } from "express";
 import { z } from "zod";
+import { ProviderError, providerErrorToHttpStatus } from "../lib/provider-errors.js";
 import {
   submitTranslationJob,
   getTranslationJob,
@@ -21,10 +22,8 @@ import { logger } from "../lib/logger.js";
 
 const router = Router();
 
-// ── Validation ──────────────────────────────────────────────────────
-
 const translationSettingsSchema = z.object({
-  model: z.string().trim().min(1).default("gemini-3-flash-preview"),
+  model: z.string().trim().min(1),
   targetLang: z.string().trim().min(1).default("Vietnamese"),
   style: z.enum(["natural", "literal", "literary", "academic"]).default("natural"),
   glossary: z.string().default(""),
@@ -33,12 +32,20 @@ const translationSettingsSchema = z.object({
 
 const translationJobSchema = z.object({
   text: z.string().trim().min(1, "Missing text to translate"),
-  settings: translationSettingsSchema.optional(),
+  settings: translationSettingsSchema,
   pageId: z.number().optional(),
   bookName: z.string().optional(),
 });
 
-// ── Submit Job ──────────────────────────────────────────────────────
+function buildSettings(settings: z.infer<typeof translationSettingsSchema>) {
+  return {
+    model: settings.model.trim(),
+    targetLang: settings.targetLang,
+    style: settings.style,
+    glossary: settings.glossary,
+    instructions: settings.instructions,
+  };
+}
 
 router.post("/", (req, res) => {
   const parsed = translationJobSchema.safeParse(req.body);
@@ -50,19 +57,12 @@ router.post("/", (req, res) => {
   }
 
   const { text, settings, pageId, bookName } = parsed.data;
-  const fullSettings = {
-    model: settings?.model ?? "gemini-3-flash-preview",
-    targetLang: settings?.targetLang ?? "Vietnamese",
-    style: settings?.style ?? ("natural" as const),
-    glossary: settings?.glossary ?? "",
-    instructions: settings?.instructions ?? "",
-  };
-
   const job = submitTranslationJob({
     text,
-    settings: fullSettings,
+    settings: buildSettings(settings),
     pageId,
     bookName,
+    requestId: req.requestId,
   });
 
   logger.info("Translation job submitted", {
@@ -78,8 +78,6 @@ router.post("/", (req, res) => {
   });
 });
 
-// ── Poll Status ─────────────────────────────────────────────────────
-
 router.get("/:jobId", (req, res) => {
   const job = getTranslationJob(req.params.jobId);
   if (!job) {
@@ -91,12 +89,11 @@ router.get("/:jobId", (req, res) => {
     status: job.status,
     progress: job.progress ?? 0,
     error: job.status === "failed" ? job.error : undefined,
+    code: job.status === "failed" ? job.errorCode : undefined,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
   });
 });
-
-// ── Get Result ──────────────────────────────────────────────────────
 
 router.get("/:jobId/result", (req, res) => {
   const job = getTranslationJob(req.params.jobId);
@@ -115,22 +112,16 @@ router.get("/:jobId/result", (req, res) => {
   res.json(job.result);
 });
 
-// ── Cancel ──────────────────────────────────────────────────────────
-
 router.post("/:jobId/cancel", (req, res) => {
   const canceled = cancelTranslationJob(req.params.jobId);
   if (!canceled) {
     return res.status(409).json({
-      error: "Cannot cancel job — only queued jobs can be canceled",
+      error: "Cannot cancel job - only queued jobs can be canceled",
     });
   }
 
   res.json({ jobId: req.params.jobId, status: "canceled" });
 });
-
-// ── Sync Compat Endpoint ────────────────────────────────────────────
-// This endpoint provides backward compatibility with the existing
-// /api/translate interface. It submits a job and polls until completion.
 
 router.post("/sync", async (req, res) => {
   const parsed = translationJobSchema.safeParse(req.body);
@@ -142,33 +133,24 @@ router.post("/sync", async (req, res) => {
   }
 
   const { text, settings, pageId, bookName } = parsed.data;
-  const fullSettings = {
-    model: settings?.model ?? "gemini-3-flash-preview",
-    targetLang: settings?.targetLang ?? "Vietnamese",
-    style: settings?.style ?? ("natural" as const),
-    glossary: settings?.glossary ?? "",
-    instructions: settings?.instructions ?? "",
-  };
-
   const job = submitTranslationJob({
     text,
-    settings: fullSettings,
+    settings: buildSettings(settings),
     pageId,
     bookName,
+    requestId: req.requestId,
   });
 
-  // If cache hit, return immediately
   if (job.status === "completed" && job.result) {
     return res.json({ translatedText: job.result.translatedText });
   }
 
-  // Poll until completion (max ~120s)
   const maxWaitMs = 120_000;
   const pollIntervalMs = 500;
   const deadline = Date.now() + maxWaitMs;
 
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
 
     const current = getTranslationJob(job.jobId);
     if (!current) {
@@ -180,8 +162,13 @@ router.post("/sync", async (req, res) => {
     }
 
     if (current.status === "failed") {
-      return res.status(502).json({
+      const providerError = current.errorCode
+        ? new ProviderError(current.errorCode, current.error ?? "Translation failed")
+        : null;
+
+      return res.status(providerError ? providerErrorToHttpStatus(providerError) : 502).json({
         error: current.error ?? "Translation failed",
+        code: current.errorCode,
       });
     }
 

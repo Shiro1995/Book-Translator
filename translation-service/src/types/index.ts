@@ -1,17 +1,18 @@
-// ── Job States ──────────────────────────────────────────────────────
+import type { ProviderErrorCode } from "../lib/provider-errors.js";
+
 export type JobStatus = "queued" | "processing" | "completed" | "failed" | "canceled";
 
 export interface JobInfo<TResult = unknown> {
   jobId: string;
   status: JobStatus;
-  progress?: number;       // 0-100
-  createdAt: number;       // epoch ms
+  progress?: number;
+  createdAt: number;
   updatedAt: number;
   error?: string;
+  errorCode?: ProviderErrorCode;
   result?: TResult;
 }
 
-// ── Translation ─────────────────────────────────────────────────────
 export type TranslationStyle = "natural" | "literal" | "literary" | "academic";
 
 export interface TranslationSettings {
@@ -27,13 +28,13 @@ export interface TranslationJobInput {
   settings: TranslationSettings;
   pageId?: number;
   bookName?: string;
+  requestId?: string;
 }
 
 export interface TranslationJobResult {
   translatedText: string;
 }
 
-// ── Document Parse ──────────────────────────────────────────────────
 export interface ParsedPage {
   id: number;
   originalText: string;
@@ -47,7 +48,6 @@ export interface DocumentParseResult {
   pages: ParsedPage[];
 }
 
-// ── Provider ────────────────────────────────────────────────────────
 export interface TranslateRequest {
   text: string;
   model: string;
@@ -57,6 +57,8 @@ export interface TranslateRequest {
   instructions: string;
   pageId?: number;
   bookName?: string;
+  requestId?: string;
+  jobId?: string;
 }
 
 export interface TranslateResponse {

@@ -3,8 +3,8 @@
  */
 
 import { Router } from "express";
+import { isTranslationProviderConfigured } from "../config/index.js";
 import { getTranslationStats } from "../services/translation.js";
-import { config } from "../config/index.js";
 
 const router = Router();
 const startedAt = Date.now();
@@ -20,7 +20,7 @@ router.get("/health", (_req, res) => {
 
 router.get("/ready", (_req, res) => {
   const stats = getTranslationStats();
-  const ready = Boolean(config.n8nWebhookUrl);
+  const ready = isTranslationProviderConfigured();
 
   res.status(ready ? 200 : 503).json({
     ready,

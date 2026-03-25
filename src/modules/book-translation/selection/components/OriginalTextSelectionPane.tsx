@@ -6,6 +6,7 @@ import type {
   SelectionAnalyticsPayload,
   SelectionSnapshot,
   SelectionTab,
+  VietnameseAssistResult,
 } from "../types";
 import { parseGlossaryEntries } from "../services/glossaryLookupService";
 import { useTextSelection } from "../hooks/useTextSelection";
@@ -15,6 +16,10 @@ import { SelectionInspector } from "./SelectionInspector";
 import { lookupDictionarySelection } from "../services/dictionaryLookupService";
 import { requestSelectionAiInsights } from "../services/selectionAiService";
 import { trackSelectionAnalytics } from "../services/selectionAnalytics";
+import {
+  requestVietnameseAssistBlock,
+  shouldLoadVietnameseAssistBlock,
+} from "../services/vietnameseAssistService";
 
 interface AsyncState<T> {
   selectionId: string | null;
@@ -50,6 +55,20 @@ const IDLE_AI_STATE: AsyncState<SelectionAiResult> = {
   status: "idle",
   error: null,
   data: null,
+};
+
+const IDLE_VIETNAMESE_ASSIST_STATE: AsyncState<VietnameseAssistResult> = {
+  selectionId: null,
+  status: "idle",
+  error: null,
+  data: null,
+};
+
+const UNSUPPORTED_VIETNAMESE_ASSIST_RESULT: VietnameseAssistResult = {
+  status: "unsupported",
+  source: "none",
+  title: "Giải thích tiếng Việt",
+  note: "Block này chỉ áp dụng cho từ/cụm ngắn. Với đoạn dài, hãy dùng tab AI ngữ cảnh.",
 };
 
 async function copyToClipboard(value: string) {
@@ -88,7 +107,9 @@ export function OriginalTextSelectionPane({
   const hideBubbleTimerRef = useRef<number | null>(null);
   const lastTrackedSelectionIdRef = useRef<string | null>(null);
   const currentSelectionRef = useRef<SelectionSnapshot | null>(null);
+  const dictionaryAbortRef = useRef<AbortController | null>(null);
   const aiAbortRef = useRef<AbortController | null>(null);
+  const vietnameseAssistAbortRef = useRef<AbortController | null>(null);
   const glossaryEntries = useMemo(() => parseGlossaryEntries(glossary), [glossary]);
   const { selection, clearSelection } = useTextSelection({
     containerRef,
@@ -108,6 +129,9 @@ export function OriginalTextSelectionPane({
     IDLE_DICTIONARY_STATE,
   );
   const [aiState, setAiState] = useState<AsyncState<SelectionAiResult>>(IDLE_AI_STATE);
+  const [vietnameseAssistState, setVietnameseAssistState] = useState<AsyncState<VietnameseAssistResult>>(
+    IDLE_VIETNAMESE_ASSIST_STATE,
+  );
 
   useEffect(() => {
     currentSelectionRef.current = currentSelection;
@@ -118,7 +142,9 @@ export function OriginalTextSelectionPane({
       if (hideBubbleTimerRef.current) {
         window.clearTimeout(hideBubbleTimerRef.current);
       }
+      dictionaryAbortRef.current?.abort();
       aiAbortRef.current?.abort();
+      vietnameseAssistAbortRef.current?.abort();
     };
   }, []);
 
@@ -150,16 +176,19 @@ export function OriginalTextSelectionPane({
     return () => {
       resizeObserver.disconnect();
     };
-  }, [activeTab, aiState.status, dictionaryState.status, isInspectorOpen]);
+  }, [activeTab, aiState.status, dictionaryState.status, isInspectorOpen, vietnameseAssistState.status]);
 
   useEffect(() => {
+    dictionaryAbortRef.current?.abort();
     aiAbortRef.current?.abort();
+    vietnameseAssistAbortRef.current?.abort();
     setCurrentSelection(null);
     setIsBubbleVisible(false);
     setIsInspectorOpen(false);
     setPinned(false);
     setDictionaryState(IDLE_DICTIONARY_STATE);
     setAiState(IDLE_AI_STATE);
+    setVietnameseAssistState(IDLE_VIETNAMESE_ASSIST_STATE);
     lastTrackedSelectionIdRef.current = null;
     clearSelection();
   }, [bookId, clearSelection, originalText, pageId]);
@@ -182,6 +211,7 @@ export function OriginalTextSelectionPane({
         setActiveTab(selection.classifier.defaultTab);
         setDictionaryState(IDLE_DICTIONARY_STATE);
         setAiState(IDLE_AI_STATE);
+        setVietnameseAssistState(IDLE_VIETNAMESE_ASSIST_STATE);
         trackSelectionAnalytics("default_tab_assigned", buildAnalyticsPayload(selection));
       }
 
@@ -213,14 +243,16 @@ export function OriginalTextSelectionPane({
       const startedAt = performance.now();
       const payload = buildAnalyticsPayload(currentSelection);
       trackSelectionAnalytics("dictionary_lookup_started", payload);
+      dictionaryAbortRef.current?.abort();
+      const dictionaryController = new AbortController();
+      dictionaryAbortRef.current = dictionaryController;
       setDictionaryState({
         selectionId: currentSelection.id,
         status: "loading",
         error: null,
         data: null,
       });
-
-      const dictionaryController = new AbortController();
+      setVietnameseAssistState(IDLE_VIETNAMESE_ASSIST_STATE);
 
       void lookupDictionarySelection(
         {
@@ -269,6 +301,7 @@ export function OriginalTextSelectionPane({
     if (activeTab === "ai" && aiState.selectionId !== currentSelection.id) {
       const startedAt = performance.now();
       const payload = buildAnalyticsPayload(currentSelection);
+      vietnameseAssistAbortRef.current?.abort();
       aiAbortRef.current?.abort();
       const controller = new AbortController();
       aiAbortRef.current = controller;
@@ -361,6 +394,99 @@ export function OriginalTextSelectionPane({
   ]);
 
   useEffect(() => {
+    if (!currentSelection || !isInspectorOpen || activeTab !== "dictionary") {
+      return;
+    }
+
+    if (
+      dictionaryState.status !== "success" ||
+      dictionaryState.selectionId !== currentSelection.id ||
+      !dictionaryState.data
+    ) {
+      return;
+    }
+
+    if (
+      vietnameseAssistState.selectionId === currentSelection.id &&
+      vietnameseAssistState.status !== "idle"
+    ) {
+      return;
+    }
+
+    if (!shouldLoadVietnameseAssistBlock(currentSelection)) {
+      setVietnameseAssistState({
+        selectionId: currentSelection.id,
+        status: "success",
+        error: null,
+        data: UNSUPPORTED_VIETNAMESE_ASSIST_RESULT,
+      });
+      return;
+    }
+
+    vietnameseAssistAbortRef.current?.abort();
+    const controller = new AbortController();
+    vietnameseAssistAbortRef.current = controller;
+    setVietnameseAssistState({
+      selectionId: currentSelection.id,
+      status: "loading",
+      error: null,
+      data: null,
+    });
+
+    void requestVietnameseAssistBlock(
+      {
+        selection: currentSelection,
+        dictionaryResult: dictionaryState.data,
+        bookName,
+        glossary,
+        instructions,
+        model,
+        targetLanguage,
+      },
+      { signal: controller.signal },
+    )
+      .then((result) => {
+        if (controller.signal.aborted || currentSelectionRef.current?.id !== currentSelection.id) {
+          return;
+        }
+
+        setVietnameseAssistState({
+          selectionId: currentSelection.id,
+          status: "success",
+          error: null,
+          data: result,
+        });
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const message = error instanceof Error ? error.message : "Vietnamese assist failed";
+        setVietnameseAssistState({
+          selectionId: currentSelection.id,
+          status: "error",
+          error: message,
+          data: null,
+        });
+      });
+  }, [
+    activeTab,
+    bookName,
+    currentSelection,
+    dictionaryState.data,
+    dictionaryState.selectionId,
+    dictionaryState.status,
+    glossary,
+    instructions,
+    isInspectorOpen,
+    model,
+    targetLanguage,
+    vietnameseAssistState.selectionId,
+    vietnameseAssistState.status,
+  ]);
+
+  useEffect(() => {
     if (!isBubbleVisible && !isInspectorOpen) {
       return;
     }
@@ -381,10 +507,14 @@ export function OriginalTextSelectionPane({
 
       setIsBubbleVisible(false);
       if (isInspectorOpen && !pinned) {
+        dictionaryAbortRef.current?.abort();
+        aiAbortRef.current?.abort();
+        vietnameseAssistAbortRef.current?.abort();
         setIsInspectorOpen(false);
         setCurrentSelection(null);
         setDictionaryState(IDLE_DICTIONARY_STATE);
         setAiState(IDLE_AI_STATE);
+        setVietnameseAssistState(IDLE_VIETNAMESE_ASSIST_STATE);
         clearSelection();
       } else if (!isInspectorOpen) {
         setCurrentSelection(null);
@@ -397,12 +527,16 @@ export function OriginalTextSelectionPane({
         return;
       }
 
+      dictionaryAbortRef.current?.abort();
+      aiAbortRef.current?.abort();
+      vietnameseAssistAbortRef.current?.abort();
       setIsBubbleVisible(false);
       setIsInspectorOpen(false);
       setCurrentSelection(null);
       setPinned(false);
       setDictionaryState(IDLE_DICTIONARY_STATE);
       setAiState(IDLE_AI_STATE);
+      setVietnameseAssistState(IDLE_VIETNAMESE_ASSIST_STATE);
       clearSelection();
       if (currentSelectionRef.current) {
         trackSelectionAnalytics("popup_closed", buildAnalyticsPayload(currentSelectionRef.current));
@@ -425,6 +559,9 @@ export function OriginalTextSelectionPane({
       return;
     }
 
+    dictionaryAbortRef.current?.abort();
+    aiAbortRef.current?.abort();
+    vietnameseAssistAbortRef.current?.abort();
     if (hideBubbleTimerRef.current) {
       window.clearTimeout(hideBubbleTimerRef.current);
     }
@@ -433,6 +570,7 @@ export function OriginalTextSelectionPane({
     setActiveTab(currentSelection.classifier.defaultTab);
     setDictionaryState(IDLE_DICTIONARY_STATE);
     setAiState(IDLE_AI_STATE);
+    setVietnameseAssistState(IDLE_VIETNAMESE_ASSIST_STATE);
     if (currentSelection.classifier.defaultTab === "ai") {
       setAiState({
         selectionId: null,
@@ -454,6 +592,21 @@ export function OriginalTextSelectionPane({
     }
 
     setActiveTab(tab);
+    if (tab === "ai") {
+      vietnameseAssistAbortRef.current?.abort();
+      setVietnameseAssistState((prev) => {
+        if (prev.selectionId !== currentSelection.id || prev.status !== "loading") {
+          return prev;
+        }
+
+        return {
+          selectionId: currentSelection.id,
+          status: "idle",
+          error: null,
+          data: null,
+        };
+      });
+    }
     if (tab === "ai" && aiState.selectionId !== currentSelection.id) {
       setAiState({
         selectionId: null,
@@ -472,6 +625,7 @@ export function OriginalTextSelectionPane({
 
     onAppendGlossaryEntry(`${currentSelection.trimmedText} -> ${translation}`);
     setDictionaryState(IDLE_DICTIONARY_STATE);
+    setVietnameseAssistState(IDLE_VIETNAMESE_ASSIST_STATE);
     trackSelectionAnalytics("glossary_action_clicked", buildAnalyticsPayload(currentSelection));
   };
 
@@ -522,11 +676,15 @@ export function OriginalTextSelectionPane({
           aria-label="Đóng inspector vùng chọn"
           className="fixed inset-0 z-[63] bg-black/30"
           onClick={() => {
+            dictionaryAbortRef.current?.abort();
+            aiAbortRef.current?.abort();
+            vietnameseAssistAbortRef.current?.abort();
             setIsInspectorOpen(false);
             setCurrentSelection(null);
             setPinned(false);
             setDictionaryState(IDLE_DICTIONARY_STATE);
             setAiState(IDLE_AI_STATE);
+            setVietnameseAssistState(IDLE_VIETNAMESE_ASSIST_STATE);
             clearSelection();
             trackSelectionAnalytics("popup_closed", buildAnalyticsPayload(currentSelection));
           }}
@@ -541,13 +699,18 @@ export function OriginalTextSelectionPane({
           activeTab={activeTab}
           pinned={pinned}
           dictionaryState={dictionaryState}
+          vietnameseAssistState={vietnameseAssistState}
           aiState={aiState}
           onClose={() => {
+            dictionaryAbortRef.current?.abort();
+            aiAbortRef.current?.abort();
+            vietnameseAssistAbortRef.current?.abort();
             setIsInspectorOpen(false);
             setCurrentSelection(null);
             setPinned(false);
             setDictionaryState(IDLE_DICTIONARY_STATE);
             setAiState(IDLE_AI_STATE);
+            setVietnameseAssistState(IDLE_VIETNAMESE_ASSIST_STATE);
             clearSelection();
             trackSelectionAnalytics("popup_closed", buildAnalyticsPayload(currentSelection));
           }}
@@ -563,6 +726,17 @@ export function OriginalTextSelectionPane({
             void copyToClipboard(aiState.data?.translationNatural ?? "");
           }}
           onOpenAiTab={() => handleSwitchTab("ai")}
+          onRetryVietnameseAssist={() => {
+            if (!currentSelection) {
+              return;
+            }
+            setVietnameseAssistState({
+              selectionId: currentSelection.id,
+              status: "idle",
+              error: null,
+              data: null,
+            });
+          }}
           onAddGlossaryFromDictionary={() => handleAddToGlossary(dictionaryState.data?.primaryMeaning)}
           onAddGlossaryFromAi={() => handleAddToGlossary(aiState.data?.translationNatural)}
           onApplyAiTranslation={handleApplyTranslation}

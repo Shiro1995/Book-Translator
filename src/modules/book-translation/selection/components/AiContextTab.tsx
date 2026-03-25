@@ -34,8 +34,23 @@ function LoadingSection({
   );
 }
 
+function EmptySection({
+  title,
+  message,
+}: {
+  title: string;
+  message: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-black/10 p-4 dark:border-white/10">
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">{title}</div>
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">{message}</p>
+    </div>
+  );
+}
+
 export function AiContextTab({
-  selection,
+  selection: _selection,
   isLoading,
   errorMessage,
   result,
@@ -52,9 +67,6 @@ export function AiContextTab({
           <span className="inline-flex rounded-full bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
             Dịch ngữ cảnh AI
           </span>
-          <span className="inline-flex rounded-full bg-black/5 px-2 py-1 text-[11px] font-medium text-zinc-700 dark:bg-white/5 dark:text-zinc-300">
-            {selection.classifier.reason}
-          </span>
           {isPending && (
             <span className="inline-flex items-center gap-1 rounded-full bg-black/5 px-2 py-1 text-[11px] font-medium text-zinc-700 dark:bg-white/5 dark:text-zinc-300">
               <Loader2 size={12} className="animate-spin" />
@@ -65,11 +77,13 @@ export function AiContextTab({
         <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">Bản dịch tự nhiên</div>
         {result?.translationNatural ? (
           <div className="mt-2 text-lg font-semibold leading-relaxed">{result.translationNatural}</div>
-        ) : (
+        ) : isPending ? (
           <div className="mt-3 space-y-2">
             <div className="h-5 w-[88%] animate-pulse rounded bg-emerald-500/10" />
             <div className="h-5 w-[72%] animate-pulse rounded bg-emerald-500/10" />
           </div>
+        ) : (
+          <div className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">Chưa có bản dịch từ AI.</div>
         )}
         {result?.translationLiteral ? (
           <div className="mt-3 text-sm text-zinc-600 dark:text-zinc-300">
@@ -93,8 +107,10 @@ export function AiContextTab({
           <div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Giải thích ngữ cảnh</div>
           <p className="leading-relaxed text-zinc-700 dark:text-zinc-200">{result.explanation}</p>
         </div>
-      ) : (
+      ) : isPending ? (
         <LoadingSection title="Giải thích ngữ cảnh" lines={4} />
+      ) : (
+        <EmptySection title="Giải thích ngữ cảnh" message="Chưa có ghi chú ngữ cảnh bổ sung." />
       )}
 
       {result?.warnings && result.warnings.length > 0 ? (
@@ -109,8 +125,10 @@ export function AiContextTab({
             ))}
           </ul>
         </div>
-      ) : (
+      ) : isPending ? (
         <LoadingSection title="Cảnh báo và nuance" lines={2} />
+      ) : (
+        <EmptySection title="Cảnh báo và nuance" message="Không có cảnh báo hoặc nuance đáng chú ý." />
       )}
 
       {result?.alternatives && result.alternatives.length > 0 ? (
@@ -128,8 +146,10 @@ export function AiContextTab({
             ))}
           </div>
         </div>
-      ) : (
+      ) : isPending ? (
         <LoadingSection title="Các cách hiểu khác" lines={3} />
+      ) : (
+        <EmptySection title="Các cách hiểu khác" message="Chưa có phương án diễn đạt thay thế." />
       )}
 
       {result?.glossaryApplied && result.glossaryApplied.length > 0 ? (
@@ -152,8 +172,10 @@ export function AiContextTab({
             ))}
           </div>
         </div>
-      ) : (
+      ) : isPending ? (
         <LoadingSection title="Glossary áp dụng" lines={2} />
+      ) : (
+        <EmptySection title="Glossary áp dụng" message="Chưa ghi nhận mục glossary được áp dụng." />
       )}
 
       <div className="flex flex-wrap gap-2">

@@ -40,6 +40,7 @@ import { parseDOCX, parsePDF } from "../services/fileService";
 import { translationService } from "../services/translationService";
 import { normalizeUserFacingText } from "../utils/text";
 import { OriginalTextSelectionPane } from "../selection/components/OriginalTextSelectionPane";
+import { TranslatedTextSelectionPopup } from "../selection/components/TranslatedTextSelectionPopup";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 
@@ -208,6 +209,7 @@ export default function App() {
   const keyboardPageNavigationRef = useRef(false);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
   const isImportingBookRef = useRef(false);
+  const translatedTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     bookRef.current = book;
@@ -1041,6 +1043,7 @@ export default function App() {
   const filteredPageKey = filteredPages.map((page) => page.id).join(",");
   const originalText = normalizeUserFacingText(currentPage?.originalText ?? "");
   const translatedText = normalizeUserFacingText(currentPage?.translatedText ?? "");
+  const hasTranslatedContent = translatedText.trim().length > 0;
   const readingFontStyle = {
     fontFamily: '"Segoe UI", Arial, "Helvetica Neue", system-ui, sans-serif',
   } as const;
@@ -1797,7 +1800,7 @@ export default function App() {
                       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/80 backdrop-blur-sm dark:bg-zinc-900/80">
                         <Loader2 size={32} className="mb-4 animate-spin text-emerald-500" />
                         <p className="animate-pulse text-sm font-medium">
-                          Đang gửi nội dung sang webhook để dịch...
+                          Đang gửi nội dung sang translation service...
                         </p>
                       </div>
                     )}
@@ -1845,17 +1848,27 @@ export default function App() {
                         </div>
                       )}
 
-                    {!translatedText && currentPage?.status === "idle" && (
-                      <div className="flex h-full flex-col items-center justify-center italic opacity-20">
-                        <Edit3 size={48} className="mb-4" />
-                        Chưa có bản dịch cho trang này
-                      </div>
+                    {!hasTranslatedContent && currentPage?.status === "idle" && (
+                      <button
+                        type="button"
+                        onClick={() => translatedTextareaRef.current?.focus()}
+                        className="mb-3 rounded-2xl border border-black/10 bg-black/[0.03] p-3 text-left transition hover:bg-black/[0.05] dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/[0.06]"
+                      >
+                        <div className="text-sm font-medium not-italic opacity-70">
+                          Chưa có bản dịch cho trang này.
+                        </div>
+                        <div className="mt-1 text-xs opacity-60">
+                          Bấm vào vùng bên dưới để dịch tay hoặc chỉnh sửa trực tiếp.
+                        </div>
+                      </button>
                     )}
 
-                    {currentPage?.translatedText && (
+                    {currentPage && (
                       <textarea
+                        ref={translatedTextareaRef}
                         className="min-h-0 flex-1 resize-none overflow-y-auto bg-transparent outline-none focus:ring-0"
                         value={currentPage.translatedText}
+                        placeholder="Nhập bản dịch thủ công tại đây..."
                         onChange={(e) => {
                           if (!book || !currentPage) {
                             return;
@@ -1872,6 +1885,14 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                {currentPage && (
+                  <TranslatedTextSelectionPopup
+                    bookId={book.id}
+                    pageId={currentPage.id}
+                    translatedText={currentPage.translatedText}
+                    textareaRef={translatedTextareaRef}
+                  />
+                )}
               </div>
             </div>
 
@@ -1976,7 +1997,15 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="mb-2 block text-xs font-bold opacity-60">Glossary</label>
+                    <div className="mb-2 flex items-center gap-1.5 text-xs font-bold opacity-60">
+                      <span>Bảng thuật ngữ</span>
+                      <span
+                        className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-current/40 text-[10px] leading-none opacity-80"
+                        title="Bảng thuật ngữ là danh sách cặp thuật ngữ nguồn -> đích (ví dụ: Hogwarts -> Trường Hogwarts). Hệ thống sẽ ưu tiên dùng các cặp này khi dịch."
+                      >
+                        i
+                      </span>
+                    </div>
                     <textarea
                       placeholder="Ví dụ: Harry -> Harry, Hogwarts -> Trường Hogwarts..."
                       className="h-24 w-full resize-none rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
@@ -1999,8 +2028,8 @@ export default function App() {
                     <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
                       <h4 className="mb-1 text-xs font-bold text-emerald-600">Lưu ý</h4>
                       <p className="text-[11px] leading-relaxed text-emerald-700/70">
-                        Bản dịch hiện được gửi qua webhook. Nếu workflow chưa active hoặc
-                        test webhook chưa được Execute, trang sẽ báo lỗi ở bước dịch.
+                        Bản dịch hiện được gửi qua translation service. Nếu dịch vụ dịch chưa chạy
+                        hoặc provider upstream không sẵn sàng, trang sẽ báo lỗi ở bước dịch.
                       </p>
                     </div>
                   </div>
@@ -2255,7 +2284,15 @@ export default function App() {
                     </div>
 
                     <div>
-                      <label className="mb-2 block text-xs font-bold opacity-60">Glossary</label>
+                      <div className="mb-2 flex items-center gap-1.5 text-xs font-bold opacity-60">
+                        <span>Bảng thuật ngữ</span>
+                        <span
+                          className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-current/40 text-[10px] leading-none opacity-80"
+                          title="Bảng thuật ngữ là danh sách cặp thuật ngữ nguồn -> đích (ví dụ: Hogwarts -> Trường Hogwarts). Hệ thống sẽ ưu tiên dùng các cặp này khi dịch."
+                        >
+                          i
+                        </span>
+                      </div>
                       <textarea
                         className="h-24 w-full resize-none rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
                         value={settings.glossary}

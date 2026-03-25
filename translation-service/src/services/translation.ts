@@ -1,12 +1,13 @@
 /**
  * Translation job orchestration service.
- * Manages the lifecycle: cache check → dedupe → enqueue → process → cache result.
+ * Manages the lifecycle: cache check -> dedupe -> enqueue -> process -> cache result.
  */
 
 import { config } from "../config/index.js";
 import { MemoryCache } from "../cache/memory-cache.js";
+import { resolveChatCompletionModel } from "../lib/chat-completions.js";
 import { InMemoryQueue } from "../queues/in-memory-queue.js";
-import { N8nWebhookProvider } from "../providers/n8n-webhook.js";
+import { createTranslationProvider } from "../providers/index.js";
 import type { TranslationProvider } from "../providers/types.js";
 import type {
   JobInfo,
@@ -15,8 +16,6 @@ import type {
   TranslateRequest,
 } from "../types/index.js";
 import { logger } from "../lib/logger.js";
-
-// ── Instances ───────────────────────────────────────────────────────
 
 const translationCache = new MemoryCache<TranslationJobResult>(
   config.cacheMaxSize,
@@ -28,30 +27,30 @@ const translationQueue = new InMemoryQueue<TranslationJobInput, TranslationJobRe
   config.queueConcurrency,
 );
 
-let provider: TranslationProvider = new N8nWebhookProvider();
+let provider: TranslationProvider = createTranslationProvider();
 
-/** Allow swapping the translation provider (useful for testing or future providers) */
-export function setTranslationProvider(p: TranslationProvider) {
-  provider = p;
-  logger.info("Translation provider set", { provider: p.name });
+export function setTranslationProvider(nextProvider: TranslationProvider) {
+  provider = nextProvider;
+  logger.info("Translation provider set", { provider: nextProvider.name });
 }
 
-// ── Cache Key ───────────────────────────────────────────────────────
+function nestedHash(label: string, value: string) {
+  return value ? MemoryCache.hashKey({ [label]: value }) : "";
+}
 
-function buildCacheKey(input: TranslationJobInput): string {
+export function buildTranslationCacheKey(input: TranslationJobInput): string {
   return MemoryCache.hashKey({
+    provider: provider.name,
     text: input.text,
-    model: input.settings.model,
+    model: resolveChatCompletionModel(input.settings.model),
     targetLang: input.settings.targetLang,
     style: input.settings.style,
-    glossary: input.settings.glossary,
-    instructions: input.settings.instructions,
+    glossaryHash: nestedHash("glossary", input.settings.glossary),
+    instructionsHash: nestedHash("instructions", input.settings.instructions),
   });
 }
 
-// ── Register Queue Processor ────────────────────────────────────────
-
-translationQueue.process(async (_jobId, input, updateProgress) => {
+translationQueue.process(async (jobId, input, updateProgress) => {
   updateProgress(10);
 
   const request: TranslateRequest = {
@@ -63,6 +62,8 @@ translationQueue.process(async (_jobId, input, updateProgress) => {
     instructions: input.settings.instructions,
     pageId: input.pageId,
     bookName: input.bookName,
+    requestId: input.requestId,
+    jobId,
   };
 
   updateProgress(20);
@@ -74,27 +75,24 @@ translationQueue.process(async (_jobId, input, updateProgress) => {
 
   updateProgress(90);
 
-  // Cache the result
-  const cacheKey = buildCacheKey(input);
+  const cacheKey = buildTranslationCacheKey(input);
   translationCache.set(cacheKey, jobResult);
 
   updateProgress(100);
   return jobResult;
 });
 
-// ── Public API ──────────────────────────────────────────────────────
-
-/**
- * Submit a new translation job.
- * Returns immediately with job info — the job processes asynchronously.
- */
 export function submitTranslationJob(input: TranslationJobInput): JobInfo<TranslationJobResult> {
-  const cacheKey = buildCacheKey(input);
-
-  // Check cache first
+  const cacheKey = buildTranslationCacheKey(input);
   const cached = translationCache.get(cacheKey);
+
   if (cached) {
-    logger.info("Translation cache hit", { cacheKey });
+    logger.info("Translation cache hit", {
+      cacheKey,
+      provider: provider.name,
+      requestId: input.requestId,
+    });
+
     return {
       jobId: `cache-${cacheKey}`,
       status: "completed",
@@ -105,18 +103,14 @@ export function submitTranslationJob(input: TranslationJobInput): JobInfo<Transl
     };
   }
 
-  // Submit to queue with dedupe key
   return translationQueue.add(input, cacheKey);
 }
 
-/**
- * Get job status by ID.
- */
 export function getTranslationJob(jobId: string): JobInfo<TranslationJobResult> | undefined {
-  // Handle cached results
   if (jobId.startsWith("cache-")) {
     const cacheKey = jobId.slice(6);
     const cached = translationCache.get(cacheKey);
+
     if (cached) {
       return {
         jobId,
@@ -127,26 +121,22 @@ export function getTranslationJob(jobId: string): JobInfo<TranslationJobResult> 
         result: cached,
       };
     }
+
     return undefined;
   }
 
   return translationQueue.getJob(jobId);
 }
 
-/**
- * Cancel a queued translation job.
- */
 export function cancelTranslationJob(jobId: string): boolean {
   return translationQueue.cancel(jobId);
 }
 
-/**
- * Get queue and cache stats for monitoring.
- */
 export function getTranslationStats() {
   return {
     queue: translationQueue.stats(),
     cache: translationCache.stats(),
     provider: provider.name,
+    configuredProvider: config.translationProvider,
   };
 }

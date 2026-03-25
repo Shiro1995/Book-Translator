@@ -6,6 +6,7 @@
 import crypto from "crypto";
 import type { JobInfo, JobStatus } from "../types/index.js";
 import { logger } from "../lib/logger.js";
+import { isProviderError } from "../lib/provider-errors.js";
 
 export type JobProcessor<TInput, TResult> = (
   jobId: string,
@@ -182,6 +183,7 @@ export class InMemoryQueue<TInput = unknown, TResult = unknown> {
     } catch (error) {
       job.status = "failed";
       job.error = error instanceof Error ? error.message : "Unknown error";
+      job.errorCode = isProviderError(error) ? error.code : undefined;
       job.updatedAt = Date.now();
 
       const durationMs = Date.now() - startTime;

@@ -1,20 +1,22 @@
 /**
- * Selection Insights route — AI-powered analysis of selected text.
- * Moved from server.ts handleSelectionInsights.
+ * Selection Insights route - AI-powered analysis of selected text.
  *
- * POST /api/selection-insights → structured AI analysis
+ * POST /api/selection-insights -> structured AI analysis
  */
 
 import { Router, type Request, type Response } from "express";
-import { config } from "../config/index.js";
-import { extractTranslatedText, safeJsonParse } from "../lib/extract.js";
-import { normalizeUserFacingText } from "../lib/text.js";
-import { isVietnameseTarget } from "../lib/vietnamese.js";
+import { cliproxyChatCompletionsClient } from "../lib/chat-completions.js";
+import { safeJsonParse } from "../lib/extract.js";
 import { logger } from "../lib/logger.js";
+import { normalizeUserFacingText } from "../lib/text.js";
+import {
+  ProviderError,
+  isProviderError,
+  providerErrorToHttpStatus,
+} from "../lib/provider-errors.js";
+import { isVietnameseTarget } from "../lib/vietnamese.js";
 
 const router = Router();
-
-// ── Types ───────────────────────────────────────────────────────────
 
 interface SelectionInsightsRequestBody {
   bookId?: string;
@@ -69,74 +71,9 @@ interface SelectionInsightResponse {
   source: "api" | "fallback";
 }
 
-// ── Webhook Helpers ─────────────────────────────────────────────────
-
-function getProductionWebhookUrl(url: string) {
-  if (!url.includes("/webhook-test/")) return null;
-  return url.replace("/webhook-test/", "/webhook/");
-}
-
-async function postToWebhook(url: string, payload: object, token: string, timeoutMs: number) {
-  return fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": token,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-}
-
-async function postToWebhookWithBearer(url: string, payload: object, token: string, timeoutMs: number) {
-  return fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-}
-
-async function callWebhook(payload: object) {
-  const webhookUrl = config.n8nWebhookUrl;
-  const authToken = config.n8nAuthToken;
-  const timeoutMs = config.webhookTimeoutMs;
-
-  let response = await postToWebhook(webhookUrl, payload, authToken, timeoutMs);
-  let effectiveWebhookUrl = webhookUrl;
-
-  logger.info("Webhook request sent", { url: effectiveWebhookUrl, status: response.status });
-
-  if (response.status === 401 || response.status === 403) {
-    response = await postToWebhookWithBearer(effectiveWebhookUrl, payload, authToken, timeoutMs);
-    logger.info("Retried with Bearer auth", { status: response.status });
-  }
-
-  if (response.status === 404) {
-    const productionUrl = getProductionWebhookUrl(webhookUrl);
-    if (productionUrl) {
-      response = await postToWebhook(productionUrl, payload, authToken, timeoutMs);
-      effectiveWebhookUrl = productionUrl;
-      if (response.status === 401 || response.status === 403) {
-        response = await postToWebhookWithBearer(effectiveWebhookUrl, payload, authToken, timeoutMs);
-      }
-    }
-  }
-
-  const rawBody = await response.text();
-  const parsedBody = safeJsonParse(rawBody);
-
-  return { response, effectiveWebhookUrl, rawBody, parsedBody };
-}
-
-// ── Normalization Helpers ───────────────────────────────────────────
-
 function truncateForPrompt(value: string | undefined, maxLength = 1200) {
   const normalized = (value ?? "").trim();
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized;
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
 }
 
 function extractJsonFromText(raw: string): unknown {
@@ -174,12 +111,13 @@ function normalizeAlternatives(value: unknown): SelectionInsightAlternative[] {
       const record = item as Record<string, unknown>;
       const text = typeof record.text === "string" ? normalizeUserFacingText(record.text).trim() : "";
       if (!text) return null;
+
       return {
         text,
         note: typeof record.note === "string" ? normalizeUserFacingText(record.note).trim() : undefined,
       };
     })
-    .filter((item): item is NonNullable<typeof item> => item !== null);
+    .filter((item) => item !== null) as SelectionInsightAlternative[];
 }
 
 function normalizeGlossaryApplied(value: unknown): SelectionInsightGlossaryApplied[] {
@@ -188,16 +126,25 @@ function normalizeGlossaryApplied(value: unknown): SelectionInsightGlossaryAppli
     .map((item) => {
       if (!item || typeof item !== "object") return null;
       const record = item as Record<string, unknown>;
-      const sourceTerm = typeof record.sourceTerm === "string" ? normalizeUserFacingText(record.sourceTerm).trim() : "";
-      const targetTerm = typeof record.targetTerm === "string" ? normalizeUserFacingText(record.targetTerm).trim() : "";
+      const sourceTerm =
+        typeof record.sourceTerm === "string" ? normalizeUserFacingText(record.sourceTerm).trim() : "";
+      const targetTerm =
+        typeof record.targetTerm === "string" ? normalizeUserFacingText(record.targetTerm).trim() : "";
       const status =
         record.status === "applied" || record.status === "suggested" || record.status === "conflict"
           ? record.status
           : "suggested";
+
       if (!sourceTerm || !targetTerm) return null;
-      return { sourceTerm, targetTerm, status: status as "applied" | "suggested" | "conflict", note: typeof record.note === "string" ? normalizeUserFacingText(record.note).trim() : undefined };
+
+      return {
+        sourceTerm,
+        targetTerm,
+        status,
+        note: typeof record.note === "string" ? normalizeUserFacingText(record.note).trim() : undefined,
+      };
     })
-    .filter((item): item is NonNullable<typeof item> => item !== null);
+    .filter((item) => item !== null) as SelectionInsightGlossaryApplied[];
 }
 
 function normalizeSegmentation(value: unknown): SelectionInsightSegmentation[] {
@@ -208,12 +155,16 @@ function normalizeSegmentation(value: unknown): SelectionInsightSegmentation[] {
       const record = item as Record<string, unknown>;
       const source = typeof record.source === "string" ? normalizeUserFacingText(record.source).trim() : "";
       if (!source) return null;
+
       return {
         source,
-        explanation: typeof record.explanation === "string" ? normalizeUserFacingText(record.explanation).trim() : undefined,
+        explanation:
+          typeof record.explanation === "string"
+            ? normalizeUserFacingText(record.explanation).trim()
+            : undefined,
       };
     })
-    .filter((item): item is NonNullable<typeof item> => item !== null);
+    .filter((item) => item !== null) as SelectionInsightSegmentation[];
 }
 
 function normalizeSelectionInsightPayload(payload: unknown): SelectionInsightResponse | null {
@@ -232,9 +183,13 @@ function normalizeSelectionInsightPayload(payload: unknown): SelectionInsightRes
   return {
     translationNatural,
     translationLiteral:
-      typeof record.translationLiteral === "string" ? normalizeUserFacingText(record.translationLiteral).trim() : undefined,
+      typeof record.translationLiteral === "string"
+        ? normalizeUserFacingText(record.translationLiteral).trim()
+        : undefined,
     explanation:
-      typeof record.explanation === "string" ? normalizeUserFacingText(record.explanation).trim() : undefined,
+      typeof record.explanation === "string"
+        ? normalizeUserFacingText(record.explanation).trim()
+        : undefined,
     alternatives: normalizeAlternatives(record.alternatives),
     glossaryApplied: normalizeGlossaryApplied(record.glossaryApplied),
     warnings: normalizeStringArray(record.warnings),
@@ -252,29 +207,27 @@ function extractSelectionInsights(payload: unknown): SelectionInsightResponse | 
     return normalizeSelectionInsightPayload(extractJsonFromText(payload));
   }
 
-  const translatedText = extractTranslatedText(payload);
-  if (!translatedText) return null;
-
-  return normalizeSelectionInsightPayload(extractJsonFromText(translatedText));
+  return null;
 }
 
-function buildSelectionInsightPrompt(body: SelectionInsightsRequestBody) {
-  return [
-    "You are the selection-inspector assistant for a book/document translation application.",
-    "Return strict JSON only. Do not include markdown fences or prose outside JSON.",
-    "Use this schema exactly:",
-    '{"translationNatural":"string","translationLiteral":"string?","explanation":"string?","alternatives":[{"text":"string","note":"string?"}],"glossaryApplied":[{"sourceTerm":"string","targetTerm":"string","status":"applied|suggested|conflict","note":"string?"}],"warnings":["string"],"segmentation":[{"source":"string","explanation":"string?"}],"confidence":0.0}',
-    "Rules:",
-    "- Prefer glossary terms when provided. If you do not use a glossary term, mention the conflict in glossaryApplied or warnings.",
-    "- Dictionary-style behavior is for short terms, but you should still explain short ambiguous phrases clearly.",
-    "- If the selection appears cut off mid-sentence, add a warning.",
-    "- Keep explanation concise and professional in the target language.",
-    "",
+function buildSelectionInsightMessages(body: SelectionInsightsRequestBody) {
+  const systemPrompt = [
+    "You are the selection-inspector assistant for a book and document translation application.",
+    "Return strict JSON only.",
+    "Do not include markdown fences or any prose outside the JSON object.",
+    'Use this schema exactly: {"translationNatural":"string","translationLiteral":"string?","explanation":"string?","alternatives":[{"text":"string","note":"string?"}],"glossaryApplied":[{"sourceTerm":"string","targetTerm":"string","status":"applied|suggested|conflict","note":"string?"}],"warnings":["string"],"segmentation":[{"source":"string","explanation":"string?"}],"confidence":0.0}',
+    "Prefer glossary terms when they fit the context.",
+    "Keep the explanation concise and professional in the target language.",
+    "If the target language is Vietnamese, use proper Vietnamese diacritics.",
+  ].join(" ");
+
+  const userPrompt = [
     `Book: ${body.bookName ?? "Untitled"}`,
     `Page: ${body.pageId ?? "unknown"}`,
     `Source language hint: ${body.sourceLanguage ?? "unknown"}`,
     `Target language: ${body.targetLanguage ?? "Vietnamese"}`,
     `Selected text: ${body.selectedText ?? ""}`,
+    `Normalized text: ${body.normalizedText ?? ""}`,
     `Text before selection: ${truncateForPrompt(body.beforeText, 240)}`,
     `Text after selection: ${truncateForPrompt(body.afterText, 240)}`,
     `Paragraph context: ${truncateForPrompt(body.paragraphText, 900)}`,
@@ -286,86 +239,90 @@ function buildSelectionInsightPrompt(body: SelectionInsightsRequestBody) {
   ]
     .filter(Boolean)
     .join("\n");
+
+  return [
+    { role: "system" as const, content: systemPrompt },
+    { role: "user" as const, content: userPrompt },
+  ];
 }
 
-// ── Route Handler ───────────────────────────────────────────────────
+function buildFallbackResponse(translatedText: string): SelectionInsightResponse {
+  return {
+    translationNatural: normalizeUserFacingText(translatedText).trim(),
+    translationLiteral: undefined,
+    explanation:
+      "AI khong tra ve JSON co cau truc, he thong fallback sang ban phan tich don gian.",
+    alternatives: [],
+    glossaryApplied: [],
+    warnings: [
+      "Ket qua dang o che do fallback. Neu can phan tich sau hon, hay dieu chinh prompt hoac model.",
+    ],
+    segmentation: [],
+    confidence: undefined,
+    source: "fallback",
+  };
+}
 
 router.post("/", async (req: Request<object, object, SelectionInsightsRequestBody>, res: Response) => {
   const selectedText = req.body?.selectedText?.trim();
   if (!selectedText) {
     return res.status(400).json({ error: "Missing selected text" });
   }
+  const model = req.body?.model?.trim();
+  if (!model) {
+    return res.status(400).json({ error: "Missing model" });
+  }
 
   const targetLanguage = req.body?.targetLanguage?.trim() || "Vietnamese";
-  const prompt = buildSelectionInsightPrompt(req.body ?? {});
   const instructionsForRequest = [
     req.body?.instructions?.trim() ?? "",
     isVietnameseTarget(targetLanguage)
-      ? "Bắt buộc giữ tiếng Việt có đầy đủ dấu nếu output dùng tiếng Việt."
+      ? "If you answer in Vietnamese, use full Vietnamese diacritics."
       : "",
   ]
     .filter(Boolean)
     .join("\n");
 
-  const webhookPayload = {
-    text: prompt,
-    model: req.body?.model?.trim() || "gemini-3-flash-preview",
-    targetLang: targetLanguage,
-    style: "natural",
-    glossary: req.body?.glossary?.trim() ?? "",
-    instructions: instructionsForRequest,
-    pageId: req.body?.pageId ?? null,
-    bookName: req.body?.bookName ?? null,
-  };
-
   try {
-    const { response, effectiveWebhookUrl, rawBody, parsedBody } = await callWebhook(webhookPayload);
-
-    if (!response.ok) {
-      const n8nDetails =
-        extractTranslatedText(parsedBody) ??
-        rawBody.slice(0, 500) ??
-        `HTTP ${response.status}`;
-
-      return res.status(502).json({
-        error: "n8n webhook returned an error for selection insights",
-        details: n8nDetails,
-        status: response.status,
-        webhookUrl: effectiveWebhookUrl,
-      });
-    }
+    const completion = await cliproxyChatCompletionsClient.createCompletion({
+      feature: "selection-insights",
+      model,
+      messages: buildSelectionInsightMessages({
+        ...req.body,
+        instructions: instructionsForRequest,
+      }),
+      temperature: 0.1,
+      maxTokens: 2_000,
+      requestId: req.requestId,
+    });
 
     const structuredPayload =
-      extractSelectionInsights(parsedBody) ??
-      extractSelectionInsights(extractTranslatedText(parsedBody) ?? rawBody);
+      extractSelectionInsights(completion.messageText) ??
+      extractSelectionInsights(extractJsonFromText(completion.messageText));
 
     if (structuredPayload) {
       return res.json(structuredPayload);
     }
 
-    const translatedText = extractTranslatedText(parsedBody) ?? selectedText;
-    return res.json({
-      translationNatural: normalizeUserFacingText(translatedText).trim(),
-      translationLiteral: undefined,
-      explanation:
-        "AI không trả về JSON có cấu trúc, nên hệ thống fallback sang bản dịch tự nhiên của vùng chọn.",
-      alternatives: [],
-      glossaryApplied: [],
-      warnings: [
-        "Kết quả đang ở chế độ fallback. Nếu cần phân tích sâu hơn, kiểm tra prompt/flow của n8n để trả JSON chuẩn.",
-      ],
-      segmentation: [],
-      confidence: undefined,
-      source: "fallback" as const,
-    });
+    return res.json(buildFallbackResponse(completion.messageText || selectedText));
   } catch (error) {
-    logger.error("Selection insights webhook error", {
-      error: error instanceof Error ? error.message : "Unknown error",
+    const providerError = isProviderError(error)
+      ? error
+      : new ProviderError(
+        "E_PROVIDER_UNAVAILABLE",
+        error instanceof Error ? error.message : "Unknown provider error",
+      );
+
+    logger.error("Selection insights provider error", {
+      requestId: req.requestId,
+      code: providerError.code,
+      error: providerError.message,
     });
-    return res.status(502).json({
-      code: "E_SELECTION_AI",
-      error: "Failed to reach selection insights webhook",
-      details: error instanceof Error ? error.message : "Unknown error",
+
+    return res.status(providerErrorToHttpStatus(providerError)).json({
+      code: providerError.code,
+      error: "Failed to process selection insights",
+      details: providerError.message,
     });
   }
 });

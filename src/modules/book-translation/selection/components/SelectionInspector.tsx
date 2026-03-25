@@ -1,6 +1,12 @@
 import type { RefObject } from "react";
 import { BookOpen, Copy, Pin, PinOff, Sparkles, X } from "lucide-react";
-import type { DictionaryLookupResult, SelectionAiResult, SelectionSnapshot, SelectionTab } from "../types";
+import type {
+  DictionaryLookupResult,
+  SelectionAiResult,
+  SelectionSnapshot,
+  SelectionTab,
+  VietnameseAssistResult,
+} from "../types";
 import type { OverlayCoordinates } from "../utils/overlayPosition";
 import { DictionaryTab } from "./DictionaryTab";
 import { AiContextTab } from "./AiContextTab";
@@ -18,7 +24,12 @@ interface SelectionInspectorProps {
   activeTab: SelectionTab;
   pinned: boolean;
   dictionaryState: AsyncTabState<DictionaryLookupResult>;
+  vietnameseAssistState: AsyncTabState<VietnameseAssistResult>;
   aiState: AsyncTabState<SelectionAiResult>;
+  availableTabs?: SelectionTab[];
+  hideVietnameseAssist?: boolean;
+  allowAiActions?: boolean;
+  allowGlossaryActions?: boolean;
   onClose: () => void;
   onTogglePin: () => void;
   onTabChange: (tab: SelectionTab) => void;
@@ -26,6 +37,7 @@ interface SelectionInspectorProps {
   onCopyDictionaryMeaning: () => void;
   onCopyAiTranslation: () => void;
   onOpenAiTab: () => void;
+  onRetryVietnameseAssist: () => void;
   onAddGlossaryFromDictionary: () => void;
   onAddGlossaryFromAi: () => void;
   onApplyAiTranslation: () => void;
@@ -44,7 +56,12 @@ export function SelectionInspector({
   activeTab,
   pinned,
   dictionaryState,
+  vietnameseAssistState,
   aiState,
+  availableTabs = ["dictionary", "ai"],
+  hideVietnameseAssist = false,
+  allowAiActions = true,
+  allowGlossaryActions = true,
   onClose,
   onTogglePin,
   onTabChange,
@@ -52,6 +69,7 @@ export function SelectionInspector({
   onCopyDictionaryMeaning,
   onCopyAiTranslation,
   onOpenAiTab,
+  onRetryVietnameseAssist,
   onAddGlossaryFromDictionary,
   onAddGlossaryFromAi,
   onApplyAiTranslation,
@@ -59,6 +77,8 @@ export function SelectionInspector({
   const isCentered = position.placement === "center";
   const width = isCentered ? "min(calc(100vw - 24px), 480px)" : 420;
   const maxHeight = isCentered ? "calc(100vh - 24px)" : "min(calc(100vh - 24px), 560px)";
+  const hasDictionaryTab = availableTabs.includes("dictionary");
+  const hasAiTab = availableTabs.includes("ai");
 
   return (
     <section
@@ -112,42 +132,53 @@ export function SelectionInspector({
           </div>
         </div>
 
-        <div className="inline-flex rounded-full bg-black/5 p-1 dark:bg-white/5" role="tablist" aria-label="Tab tra cứu và AI">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "dictionary"}
-            onClick={() => onTabChange("dictionary")}
-            className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium transition ${tabClassName(
-              activeTab === "dictionary",
-            )}`}
-          >
-            <BookOpen size={15} />
-            Tra cứu
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "ai"}
-            onClick={() => onTabChange("ai")}
-            className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium transition ${tabClassName(
-              activeTab === "ai",
-            )}`}
-          >
-            <Sparkles size={15} />
-            AI ngữ cảnh
-          </button>
-        </div>
+        {(hasDictionaryTab || hasAiTab) && (
+          <div className="inline-flex rounded-full bg-black/5 p-1 dark:bg-white/5" role="tablist" aria-label="Tab tra cứu và AI">
+            {hasDictionaryTab && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "dictionary"}
+                onClick={() => onTabChange("dictionary")}
+                className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium transition ${tabClassName(
+                  activeTab === "dictionary",
+                )}`}
+              >
+                <BookOpen size={15} />
+                Tra cứu
+              </button>
+            )}
+            {hasAiTab && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === "ai"}
+                onClick={() => onTabChange("ai")}
+                className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium transition ${tabClassName(
+                  activeTab === "ai",
+                )}`}
+              >
+                <Sparkles size={15} />
+                AI ngữ cảnh
+              </button>
+            )}
+          </div>
+        )}
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {activeTab === "dictionary" ? (
+        {activeTab === "dictionary" || !hasAiTab ? (
           <DictionaryTab
             selection={selection}
             isLoading={dictionaryState.status === "loading"}
             errorMessage={dictionaryState.status === "error" ? dictionaryState.error : null}
             result={dictionaryState.data}
+            vietnameseAssistState={vietnameseAssistState}
+            hideVietnameseAssist={hideVietnameseAssist}
+            allowAiActions={allowAiActions}
+            allowGlossaryActions={allowGlossaryActions}
             onOpenAiTab={onOpenAiTab}
+            onRetryVietnameseAssist={onRetryVietnameseAssist}
             onCopyMeaning={onCopyDictionaryMeaning}
             onAddToGlossary={onAddGlossaryFromDictionary}
           />
