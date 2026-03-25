@@ -39,6 +39,7 @@ import { type Book, type Page, type PromptPreset, type TranslationSettings } fro
 import { parseDOCX, parsePDF } from "../services/fileService";
 import { translationService } from "../services/translationService";
 import { normalizeUserFacingText } from "../utils/text";
+import { OriginalTextSelectionPane } from "../selection/components/OriginalTextSelectionPane";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 
@@ -1080,6 +1081,44 @@ export default function App() {
   const canGoToPreviousPage = Boolean(book && currentPageIdx > 0);
   const canGoToNextPage = Boolean(book && currentPageIdx < book.totalPages - 1);
 
+  const appendGlossaryEntry = (entry: string) => {
+    setSettings((prev) => {
+      const normalizedEntry = entry.trim();
+      if (!normalizedEntry) {
+        return prev;
+      }
+
+      const nextGlossary = prev.glossary.trim()
+        ? `${prev.glossary.trim()}\n${normalizedEntry}`
+        : normalizedEntry;
+
+      return nextGlossary === prev.glossary ? prev : { ...prev, glossary: nextGlossary };
+    });
+  };
+
+  const applySelectionTranslationToPage = (translation: string) => {
+    if (!book || !currentPage) {
+      return;
+    }
+
+    const normalizedTranslation = normalizeUserFacingText(translation).trim();
+    if (!normalizedTranslation) {
+      return;
+    }
+
+    const existing = currentPage.translatedText.trim();
+    const nextTranslatedText = existing
+      ? `${currentPage.translatedText.trimEnd()}\n\n${normalizedTranslation}`
+      : normalizedTranslation;
+
+    const newPages = [...book.pages];
+    newPages[currentPageIdx] = {
+      ...currentPage,
+      translatedText: nextTranslatedText,
+    };
+    setBook({ ...book, pages: newPages });
+  };
+
   const goToPreviousPage = () => {
     setCurrentPageIdx((prev) => Math.max(0, prev - 1));
   };
@@ -1717,17 +1756,20 @@ export default function App() {
 
               <div className="flex flex-1 flex-col gap-3 overflow-hidden p-3 md:gap-6 md:p-6 lg:flex-row">
                 {!isOriginalHidden && (
-                  <div className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-black/5 bg-white shadow-sm dark:border-white/5 dark:bg-zinc-900">
-                    <div className="border-b border-black/5 px-4 py-2 text-[10px] font-semibold uppercase tracking-widest opacity-50 dark:border-white/5">
-                      Bản gốc
-                    </div>
-                    <div
-                      className="flex-1 overflow-y-auto p-4 text-base leading-relaxed md:p-8 md:text-lg"
-                      style={readingFontStyle}
-                    >
-                      {originalText}
-                    </div>
-                  </div>
+                  <OriginalTextSelectionPane
+                    bookId={book.id}
+                    bookName={book.name}
+                    pageId={currentPage?.id ?? currentPageIdx + 1}
+                    originalText={originalText}
+                    currentTranslation={currentPage?.translatedText}
+                    glossary={settings.glossary}
+                    model={settings.model}
+                    targetLanguage={settings.targetLang}
+                    instructions={settings.instructions}
+                    readingFontStyle={readingFontStyle}
+                    onAppendGlossaryEntry={appendGlossaryEntry}
+                    onApplyTranslation={applySelectionTranslationToPage}
+                  />
                 )}
 
                 <div className="relative flex flex-1 flex-col overflow-hidden rounded-2xl border border-black/5 bg-white shadow-sm dark:border-white/5 dark:bg-zinc-900">
