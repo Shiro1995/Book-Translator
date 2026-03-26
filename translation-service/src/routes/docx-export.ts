@@ -1,5 +1,6 @@
 import { Router, type Request, type RequestHandler, type Response } from "express";
 import multer from "multer";
+import { gunzipSync } from "node:zlib";
 import { z } from "zod";
 import { config } from "../config/index.js";
 import { logger } from "../lib/logger.js";
@@ -9,12 +10,15 @@ import { exportBookDocx } from "../services/docx-export.js";
 const router = Router();
 const exportPayloadLimitBytes = config.maxUploadSizeMb * 1024 * 1024;
 const upload = multer({
+  storage: multer.memoryStorage(),
   limits: {
     fieldSize: exportPayloadLimitBytes,
+    fileSize: exportPayloadLimitBytes,
     fields: 8,
+    files: 1,
   },
 });
-const uploadNone = upload.none() as unknown as RequestHandler;
+const uploadFields = upload.fields([{ name: "payloadGzip", maxCount: 1 }]) as unknown as RequestHandler;
 
 const exportDocxSchema = z.object({
   bookName: z.string().trim().min(1, "Missing bookName"),
@@ -31,7 +35,7 @@ const exportDocxSchema = z.object({
 
 function parseMultipartForm(req: Request, res: Response) {
   return new Promise<void>((resolve, reject) => {
-    uploadNone(req, res, (error?: unknown) => {
+    uploadFields(req, res, (error?: unknown) => {
       if (error) {
         reject(error);
         return;
@@ -42,17 +46,41 @@ function parseMultipartForm(req: Request, res: Response) {
   });
 }
 
+function readRawPayload(req: Request) {
+  const files =
+    req.files && !Array.isArray(req.files)
+      ? (req.files as Record<string, Express.Multer.File[]>)
+      : null;
+  const gzippedPayload = files?.payloadGzip?.[0];
+
+  if (gzippedPayload?.buffer) {
+    try {
+      return gunzipSync(gzippedPayload.buffer).toString("utf8");
+    } catch {
+      throw new Error("Invalid gzip export payload");
+    }
+  }
+
+  return typeof req.body.payload === "string"
+    ? req.body.payload
+    : typeof req.body === "string"
+      ? req.body
+      : null;
+}
+
 router.post("/", async (req, res) => {
   try {
     await parseMultipartForm(req, res);
   } catch (error) {
     if (error instanceof multer.MulterError) {
       const message =
-        error.code === "LIMIT_FIELD_VALUE"
+        error.code === "LIMIT_FIELD_VALUE" || error.code === "LIMIT_FILE_SIZE"
           ? `Export payload too large. Max request size is ${config.maxUploadSizeMb}MB.`
           : "Invalid export upload payload";
 
-      return res.status(error.code === "LIMIT_FIELD_VALUE" ? 413 : 400).json({
+      return res.status(
+        error.code === "LIMIT_FIELD_VALUE" || error.code === "LIMIT_FILE_SIZE" ? 413 : 400,
+      ).json({
         error: message,
         code: error.code,
       });
@@ -63,12 +91,14 @@ router.post("/", async (req, res) => {
     });
   }
 
-  const rawPayload =
-    typeof req.body.payload === "string"
-      ? req.body.payload
-      : typeof req.body === "string"
-        ? req.body
-        : null;
+  let rawPayload: string | null;
+  try {
+    rawPayload = readRawPayload(req);
+  } catch (error) {
+    return res.status(400).json({
+      error: error instanceof Error ? error.message : "Invalid export upload payload",
+    });
+  }
 
   if (!rawPayload) {
     return res.status(400).json({ error: "Missing export payload" });

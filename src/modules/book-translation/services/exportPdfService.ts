@@ -6,6 +6,8 @@ interface ExportPageSelection {
   endPage: number;
 }
 
+type CompressionStreamConstructor = new (format: "gzip") => TransformStream;
+
 function parseContentDispositionFilename(headerValue: string | null) {
   if (!headerValue) {
     return null;
@@ -24,6 +26,42 @@ function parseContentDispositionFilename(headerValue: string | null) {
   return basicMatch?.[1] ?? null;
 }
 
+async function buildExportRequestBody(payload: {
+  bookName: string;
+  startPage: number;
+  endPage: number;
+  totalPages: number;
+  pages: Array<{
+    id: number;
+    translatedText: string;
+  }>;
+}) {
+  const payloadJson = JSON.stringify(payload);
+  const formData = new FormData();
+  const CompressionStreamClass = (
+    globalThis as typeof globalThis & { CompressionStream?: CompressionStreamConstructor }
+  ).CompressionStream;
+
+  if (CompressionStreamClass) {
+    try {
+      const compressedStream = new Blob([payloadJson], { type: "application/json" })
+        .stream()
+        .pipeThrough(new CompressionStreamClass("gzip"));
+      const compressedBlob = await new Response(compressedStream).blob();
+
+      if (compressedBlob.size > 0 && compressedBlob.size < new Blob([payloadJson]).size) {
+        formData.append("payloadGzip", compressedBlob, "payload.json.gz");
+        return formData;
+      }
+    } catch {
+      // Fall back to the plain multipart field if the browser cannot gzip the request body.
+    }
+  }
+
+  formData.append("payload", payloadJson);
+  return formData;
+}
+
 function buildFallbackFileName(
   bookName: string,
   startPage: number,
@@ -38,6 +76,10 @@ function buildFallbackFileName(
 
 async function extractErrorMessage(response: Response) {
   const contentType = response.headers.get("content-type") ?? "";
+
+  if (response.status === 413) {
+    return "Yêu cầu xuất file quá lớn (413). Nếu đang deploy qua nginx, tăng client_max_body_size hoặc thử xuất ít trang hơn.";
+  }
 
   if (contentType.includes("application/json")) {
     const data = (await response.json().catch(() => ({}))) as {
@@ -61,6 +103,10 @@ async function extractErrorMessage(response: Response) {
   }
 
   const text = await response.text().catch(() => "");
+  if (/413 Request Entity Too Large/i.test(text)) {
+    return "Yêu cầu xuất file quá lớn (413). Reverse proxy đã chặn request trước khi tới backend.";
+  }
+
   return text || "Kh\u00f4ng th\u1ec3 xu\u1ea5t PDF";
 }
 
@@ -87,17 +133,13 @@ export class ExportPdfService {
       throw new Error("Ch\u01b0a c\u00f3 trang n\u00e0o \u0111\u00e3 d\u1ecbch \u0111\u1ec3 xu\u1ea5t PDF.");
     }
 
-    const formData = new FormData();
-    formData.append(
-      "payload",
-      JSON.stringify({
-        bookName: normalizeUserFacingText(book.name),
-        startPage,
-        endPage,
-        totalPages: book.totalPages,
-        pages,
-      }),
-    );
+    const formData = await buildExportRequestBody({
+      bookName: normalizeUserFacingText(book.name),
+      startPage,
+      endPage,
+      totalPages: book.totalPages,
+      pages,
+    });
 
     const response = await fetch("/api/export-pdf", {
       method: "POST",
