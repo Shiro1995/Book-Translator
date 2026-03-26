@@ -39,6 +39,7 @@ import { type Book, type Page, type PromptPreset, type TranslationSettings } fro
 import { parseDOCX, parsePDF } from "../services/fileService";
 import { translationService } from "../services/translationService";
 import { exportPdfService } from "../services/exportPdfService";
+import { exportDocxService } from "../services/exportDocxService";
 import { normalizeUserFacingText } from "../utils/text";
 import { OriginalTextSelectionPane } from "../selection/components/OriginalTextSelectionPane";
 import { TranslatedTextSelectionPopup } from "../selection/components/TranslatedTextSelectionPopup";
@@ -54,6 +55,7 @@ const PAGE_FILTER_OPTIONS = ["all", "idle", "error", "completed", "edited"] as c
 
 type PageFilter = (typeof PAGE_FILTER_OPTIONS)[number];
 type ExportPageRangeMode = "all" | "custom";
+type ExportFileFormat = "pdf" | "docx";
 
 type ExportPageSelection = {
   startPage: number;
@@ -99,6 +101,46 @@ const PROMPT_PRESETS: Record<
   },
 };
 
+const GLOSSARY_TOOLTIP_TEXT =
+  "Bảng thuật ngữ là danh sách cặp thuật ngữ nguồn -> đích (ví dụ: Hogwarts -> Trường Hogwarts). Hệ thống sẽ ưu tiên các cặp này khi dịch.";
+
+function resolveStyleFromPromptPreset(
+  promptPreset: PromptPreset,
+  fallbackStyle: TranslationSettings["style"] = "natural",
+): TranslationSettings["style"] {
+  switch (promptPreset) {
+    case "reader":
+      return "natural";
+    case "literary":
+      return "literary";
+    case "technical":
+      return "academic";
+    case "study":
+      return "academic";
+    case "custom":
+    default:
+      return fallbackStyle;
+  }
+}
+
+function GlossaryInfoTooltip() {
+  return (
+    <span className="group relative inline-flex items-center">
+      <button
+        type="button"
+        aria-label="Giải thích bảng thuật ngữ"
+        title={GLOSSARY_TOOLTIP_TEXT}
+        className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-current/40 text-[10px] leading-none opacity-80"
+      >
+        i
+      </button>
+      <span className="pointer-events-none absolute left-1/2 top-[calc(100%+0.4rem)] z-30 hidden w-64 -translate-x-1/2 rounded-lg border border-black/10 bg-white px-2.5 py-2 text-[11px] font-medium normal-case leading-relaxed tracking-normal text-zinc-600 shadow-xl group-hover:block group-focus-within:block dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-200">
+        {GLOSSARY_TOOLTIP_TEXT}
+      </span>
+    </span>
+  );
+}
+
 function isPageEdited(page: Page) {
   const translated = page.translatedText.trim();
   if (!translated) {
@@ -134,19 +176,23 @@ function matchesPageFilter(page: Page, filter: PageFilter) {
 function buildEffectiveSettings(settings: TranslationSettings): TranslationSettings {
   const presetInstructions = PROMPT_PRESETS[settings.promptPreset].instructions.trim();
   const customInstructions = settings.instructions.trim();
+  const style = resolveStyleFromPromptPreset(settings.promptPreset, settings.style);
 
   return {
     ...settings,
+    style,
     instructions: [presetInstructions, customInstructions].filter(Boolean).join("\n\n"),
   };
 }
 
 function getSettingsFromBook(book: Book): TranslationSettings {
+  const promptPreset = book.promptPreset ?? "reader";
+
   return {
     model: book.model,
     targetLang: book.targetLang,
-    style: book.style,
-    promptPreset: book.promptPreset ?? "reader",
+    style: resolveStyleFromPromptPreset(promptPreset, book.style),
+    promptPreset,
     glossary: book.glossary,
     instructions: book.instructions,
   };
@@ -179,6 +225,7 @@ export default function App() {
   const [isAutoTranslating, setIsAutoTranslating] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [exportFileFormat, setExportFileFormat] = useState<ExportFileFormat>("pdf");
   const [exportPageRangeMode, setExportPageRangeMode] = useState<ExportPageRangeMode>("all");
   const [exportRangeStartInput, setExportRangeStartInput] = useState("1");
   const [exportRangeEndInput, setExportRangeEndInput] = useState("1");
@@ -770,7 +817,7 @@ export default function App() {
     };
   }, [isAutoTranslating, isReaderOpen, autoStartPage]);
 
-  const exportPDF = async (selection?: ExportPageSelection) => {
+  const exportDocument = async (selection?: ExportPageSelection) => {
     if (!book || isExporting) {
       return;
     }
@@ -778,13 +825,17 @@ export default function App() {
     setIsExporting(true);
 
     try {
-      await exportPdfService.exportBook(book, selection);
+      if (exportFileFormat === "docx") {
+        await exportDocxService.exportBook(book, selection);
+      } else {
+        await exportPdfService.exportBook(book, selection);
+      }
     } catch (error) {
-      console.error("Export PDF failed", error);
+      console.error("Export failed", error);
       const message =
         error instanceof Error && error.message
           ? normalizeUserFacingText(error.message)
-          : "Không thể xuất PDF. Vui lòng thử lại.";
+          : "Không thể xuất tài liệu. Vui lòng thử lại.";
       alert(message);
     } finally {
       setIsExporting(false);
@@ -991,7 +1042,7 @@ export default function App() {
     navigate(routePaths.home);
   };
 
-  const handleExportPdfSubmit = async () => {
+  const handleExportSubmit = async () => {
     if (!book || isExporting || exportRangeError) {
       return;
     }
@@ -1008,7 +1059,7 @@ export default function App() {
         };
 
     setIsExportMenuOpen(false);
-    await exportPDF(selection);
+    await exportDocument(selection);
   };
 
   return (
@@ -1057,7 +1108,9 @@ export default function App() {
                   className="flex items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium hover:bg-black/5 disabled:opacity-50 dark:border-white/10 dark:bg-zinc-900"
                 >
                   {isExporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-                  {isExporting ? "Đang xuất..." : "Xuất PDF"}
+                  {isExporting
+                    ? "Đang xuất..."
+                    : "Xuất bản dịch"}
                   <ChevronDown
                     size={16}
                     className={cn("transition-transform", isExportMenuOpen && "rotate-180")}
@@ -1068,7 +1121,7 @@ export default function App() {
                     onClick={() => setIsExportMenuOpen((prev) => !prev)}
                     disabled={isExporting}
                     className="hidden items-center justify-center rounded-full border border-black/10 bg-white px-3 py-2 text-sm font-medium hover:bg-black/5 disabled:opacity-50 dark:border-white/10 dark:bg-zinc-900"
-                    aria-label="Chọn phạm vi trang để xuất PDF"
+                    aria-label="Chọn phạm vi trang để xuất file"
                   >
                     <ChevronDown
                       size={16}
@@ -1080,109 +1133,137 @@ export default function App() {
                     <>
                       <button
                         type="button"
-                        aria-label="Đóng menu xuất PDF"
+                        aria-label="Đóng menu xuất file"
                         className="fixed inset-0 z-[55] bg-black/40 md:hidden"
                         onClick={() => setIsExportMenuOpen(false)}
                       />
-                    <div className="fixed inset-x-3 bottom-3 z-[60] max-h-[80vh] overflow-y-auto rounded-2xl border border-black/10 bg-white p-4 shadow-2xl dark:border-white/10 dark:bg-zinc-900 md:absolute md:right-0 md:top-full md:bottom-auto md:inset-x-auto md:mt-2 md:w-[min(calc(100vw-2rem),24rem)] md:max-h-[70vh]">
-                      <div className="mb-4 rounded-xl border border-black/10 bg-black/[0.03] px-3 py-3 text-sm dark:border-white/10 dark:bg-white/[0.03]">
-                        <p className="font-medium">Xuất PDF bản dịch</p>
-                        <p className="mt-1 text-xs opacity-60">
-                          PDF hiện chỉ xuất nội dung tiếng Việt đã dịch.
-                        </p>
-                      </div>
+                      <div className="fixed inset-x-3 bottom-3 z-[60] max-h-[80vh] overflow-y-auto rounded-2xl border border-black/10 bg-white p-4 shadow-2xl dark:border-white/10 dark:bg-zinc-900 md:absolute md:right-0 md:top-full md:bottom-auto md:inset-x-auto md:mt-[10px] md:w-[min(calc(100vw-2rem),24rem)] md:max-h-[70vh]">
+                        <div className="mb-4 rounded-xl border border-black/10 bg-black/[0.03] px-3 py-3 text-sm dark:border-white/10 dark:bg-white/[0.03]">
+                          <p className="font-medium">
+                            {exportFileFormat === "docx" ? "Xuất DOCX bản dịch" : "Xuất PDF bản dịch"}
+                          </p>
+                          <p className="mt-1 text-xs opacity-60">
+                            Chỉ xuất nội dung tiếng Việt đã dịch.
+                          </p>
+                        </div>
 
-                      <div className="space-y-3">
-                        <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-black/10 px-3 py-3 text-sm dark:border-white/10">
-                          <input
-                            type="radio"
-                            name="export-page-range"
-                            checked={exportPageRangeMode === "all"}
-                            onChange={() => setExportPageRangeMode("all")}
-                            className="mt-0.5 h-4 w-4 border-black/20 text-emerald-600 focus:ring-emerald-500 dark:border-white/20"
-                          />
-                          <span>
-                            <span className="block font-medium">Tất cả trang</span>
-                            <span className="mt-1 block text-xs opacity-60">
-                              Xuất toàn bộ sách ({`1-${book.totalPages}`}).
-                            </span>
-                          </span>
-                        </label>
+                        <div className="space-y-3">
+                          <div className="rounded-xl border border-black/10 px-3 py-3 text-sm dark:border-white/10">
+                            <p className="mb-2 font-medium">Định dạng</p>
+                            <div className="grid grid-cols-2 gap-2">
+                              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-black/10 px-3 py-2 text-sm dark:border-white/10">
+                                <input
+                                  type="radio"
+                                  name="export-file-format"
+                                  checked={exportFileFormat === "pdf"}
+                                  onChange={() => setExportFileFormat("pdf")}
+                                  className="h-4 w-4 border-black/20 text-emerald-600 focus:ring-emerald-500 dark:border-white/20"
+                                />
+                                <span>PDF</span>
+                              </label>
+                              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-black/10 px-3 py-2 text-sm dark:border-white/10">
+                                <input
+                                  type="radio"
+                                  name="export-file-format"
+                                  checked={exportFileFormat === "docx"}
+                                  onChange={() => setExportFileFormat("docx")}
+                                  className="h-4 w-4 border-black/20 text-emerald-600 focus:ring-emerald-500 dark:border-white/20"
+                                />
+                                <span>DOCX</span>
+                              </label>
+                            </div>
+                          </div>
 
-                        <label className="block rounded-xl border border-black/10 px-3 py-3 text-sm dark:border-white/10">
-                          <div className="flex cursor-pointer items-start gap-3">
+                          <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-black/10 px-3 py-3 text-sm dark:border-white/10">
                             <input
                               type="radio"
                               name="export-page-range"
-                              checked={exportPageRangeMode === "custom"}
-                              onChange={() => setExportPageRangeMode("custom")}
+                              checked={exportPageRangeMode === "all"}
+                              onChange={() => setExportPageRangeMode("all")}
                               className="mt-0.5 h-4 w-4 border-black/20 text-emerald-600 focus:ring-emerald-500 dark:border-white/20"
                             />
                             <span>
-                              <span className="block font-medium">Khoảng trang</span>
+                              <span className="block font-medium">Tất cả trang</span>
                               <span className="mt-1 block text-xs opacity-60">
-                                Nhập số trang bắt đầu và kết thúc bạn muốn xuất.
+                                Xuất toàn bộ sách ({`1-${book.totalPages}`}).
                               </span>
                             </span>
-                          </div>
+                          </label>
 
-                          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                            <label className="block">
-                              <span className="mb-1 block text-xs font-medium opacity-60">Từ trang</span>
+                          <label className="block rounded-xl border border-black/10 px-3 py-3 text-sm dark:border-white/10">
+                            <div className="flex cursor-pointer items-start gap-3">
                               <input
-                                type="number"
-                                min={1}
-                                max={book.totalPages}
-                                inputMode="numeric"
-                                value={exportRangeStartInput}
-                                onChange={(event) => setExportRangeStartInput(event.target.value)}
-                                onFocus={() => setExportPageRangeMode("custom")}
-                                className="w-full rounded-xl border border-black/10 bg-black/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-500 dark:border-white/10 dark:bg-white/5"
+                                type="radio"
+                                name="export-page-range"
+                                checked={exportPageRangeMode === "custom"}
+                                onChange={() => setExportPageRangeMode("custom")}
+                                className="mt-0.5 h-4 w-4 border-black/20 text-emerald-600 focus:ring-emerald-500 dark:border-white/20"
                               />
-                            </label>
-                            <label className="block">
-                              <span className="mb-1 block text-xs font-medium opacity-60">Đến trang</span>
-                              <input
-                                type="number"
-                                min={1}
-                                max={book.totalPages}
-                                inputMode="numeric"
-                                value={exportRangeEndInput}
-                                onChange={(event) => setExportRangeEndInput(event.target.value)}
-                                onFocus={() => setExportPageRangeMode("custom")}
-                                className="w-full rounded-xl border border-black/10 bg-black/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-500 dark:border-white/10 dark:bg-white/5"
-                              />
-                            </label>
-                          </div>
-                        </label>
-                      </div>
+                              <span>
+                                <span className="block font-medium">Khoảng trang</span>
+                                <span className="mt-1 block text-xs opacity-60">
+                                  Nhập số trang bắt đầu và kết thúc bạn muốn xuất.
+                                </span>
+                              </span>
+                            </div>
 
-                      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                        <div className="min-h-5 text-xs">
-                          {exportRangeError ? (
-                            <p className="text-red-500">{exportRangeError}</p>
-                          ) : (
-                            <p className="opacity-60">{exportRangeSummary}</p>
-                          )}
+                            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                              <label className="block">
+                                <span className="mb-1 block text-xs font-medium opacity-60">Từ trang</span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={book.totalPages}
+                                  inputMode="numeric"
+                                  value={exportRangeStartInput}
+                                  onChange={(event) => setExportRangeStartInput(event.target.value)}
+                                  onFocus={() => setExportPageRangeMode("custom")}
+                                  className="w-full rounded-xl border border-black/10 bg-black/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-500 dark:border-white/10 dark:bg-white/5"
+                                />
+                              </label>
+                              <label className="block">
+                                <span className="mb-1 block text-xs font-medium opacity-60">Đến trang</span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={book.totalPages}
+                                  inputMode="numeric"
+                                  value={exportRangeEndInput}
+                                  onChange={(event) => setExportRangeEndInput(event.target.value)}
+                                  onFocus={() => setExportPageRangeMode("custom")}
+                                  className="w-full rounded-xl border border-black/10 bg-black/5 px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-500 dark:border-white/10 dark:bg-white/5"
+                                />
+                              </label>
+                            </div>
+                          </label>
                         </div>
-                        <div className="grid w-full shrink-0 grid-cols-2 gap-2 sm:w-auto sm:flex sm:flex-row">
-                          <button
-                            type="button"
-                            onClick={() => setIsExportMenuOpen(false)}
-                            className="rounded-xl border border-black/10 px-4 py-2 text-sm font-medium hover:bg-black/5 md:hidden dark:border-white/10 dark:hover:bg-white/5"
-                          >
-                            Hủy
-                          </button>
-                          <button
-                            onClick={() => void handleExportPdfSubmit()}
-                            disabled={Boolean(exportRangeError) || isExporting}
-                            className="w-full shrink-0 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-                          >
-                          Tải xuống
-                        </button>
+
+                        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-h-5 text-xs">
+                            {exportRangeError ? (
+                              <p className="text-red-500">{exportRangeError}</p>
+                            ) : (
+                              <p className="opacity-60">{exportRangeSummary}</p>
+                            )}
+                          </div>
+                          <div className="grid w-full shrink-0 grid-cols-2 gap-2 sm:w-auto sm:flex sm:flex-row">
+                            <button
+                              type="button"
+                              onClick={() => setIsExportMenuOpen(false)}
+                              className="rounded-xl border border-black/10 px-4 py-2 text-sm font-medium hover:bg-black/5 md:hidden dark:border-white/10 dark:hover:bg-white/5"
+                            >
+                              Hủy
+                            </button>
+                            <button
+                              onClick={() => void handleExportSubmit()}
+                              disabled={Boolean(exportRangeError) || isExporting}
+                              className="w-full shrink-0 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                            >
+                              {exportFileFormat === "docx" ? "Tải DOCX" : "Tải PDF"}
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    </div>
                     </>
                   )}
                 </div>
@@ -1716,32 +1797,18 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="mb-2 block text-xs font-bold opacity-60">Văn phong</label>
-                    <select
-                      className="w-full rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
-                      value={settings.style}
-                      onChange={(e) =>
-                        setSettings({ ...settings, style: e.target.value as TranslationSettings["style"] })
-                      }
-                    >
-                      <option value="natural">Tự nhiên</option>
-                      <option value="literal">Sát nghĩa</option>
-                      <option value="literary">Văn học</option>
-                      <option value="academic">Học thuật</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-xs font-bold opacity-60">Preset dịch</label>
+                    <label className="mb-2 block text-xs font-bold opacity-60">Văn phong dịch</label>
                     <select
                       className="w-full rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
                       value={settings.promptPreset}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const promptPreset = e.target.value as PromptPreset;
                         setSettings({
                           ...settings,
-                          promptPreset: e.target.value as PromptPreset,
-                        })
-                      }
+                          promptPreset,
+                          style: resolveStyleFromPromptPreset(promptPreset, settings.style),
+                        });
+                      }}
                     >
                       {Object.entries(PROMPT_PRESETS).map(([value, preset]) => (
                         <option key={`desktop-preset-${value}`} value={value}>
@@ -1771,12 +1838,7 @@ export default function App() {
                   <div>
                     <div className="mb-2 flex items-center gap-1.5 text-xs font-bold opacity-60">
                       <span>Bảng thuật ngữ</span>
-                      <span
-                        className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-current/40 text-[10px] leading-none opacity-80"
-                        title="Bảng thuật ngữ là danh sách cặp thuật ngữ nguồn -> đích (ví dụ: Hogwarts -> Trường Hogwarts). Hệ thống sẽ ưu tiên dùng các cặp này khi dịch."
-                      >
-                        i
-                      </span>
+                      <GlossaryInfoTooltip />
                     </div>
                     <textarea
                       placeholder="Ví dụ: Harry -> Harry, Hogwarts -> Trường Hogwarts..."
@@ -2003,32 +2065,18 @@ export default function App() {
                     </div>
 
                     <div>
-                      <label className="mb-2 block text-xs font-bold opacity-60">Văn phong</label>
-                      <select
-                        className="w-full rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
-                        value={settings.style}
-                        onChange={(e) =>
-                          setSettings({ ...settings, style: e.target.value as TranslationSettings["style"] })
-                        }
-                      >
-                        <option value="natural">Tự nhiên</option>
-                        <option value="literal">Sát nghĩa</option>
-                        <option value="literary">Văn học</option>
-                        <option value="academic">Học thuật</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="mb-2 block text-xs font-bold opacity-60">Preset dịch</label>
+                      <label className="mb-2 block text-xs font-bold opacity-60">Văn phong dịch</label>
                       <select
                         className="w-full rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"
                         value={settings.promptPreset}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const promptPreset = e.target.value as PromptPreset;
                           setSettings({
                             ...settings,
-                            promptPreset: e.target.value as PromptPreset,
-                          })
-                        }
+                            promptPreset,
+                            style: resolveStyleFromPromptPreset(promptPreset, settings.style),
+                          });
+                        }}
                       >
                         {Object.entries(PROMPT_PRESETS).map(([value, preset]) => (
                           <option key={`mobile-preset-${value}`} value={value}>
@@ -2058,12 +2106,7 @@ export default function App() {
                     <div>
                       <div className="mb-2 flex items-center gap-1.5 text-xs font-bold opacity-60">
                         <span>Bảng thuật ngữ</span>
-                        <span
-                          className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-current/40 text-[10px] leading-none opacity-80"
-                          title="Bảng thuật ngữ là danh sách cặp thuật ngữ nguồn -> đích (ví dụ: Hogwarts -> Trường Hogwarts). Hệ thống sẽ ưu tiên dùng các cặp này khi dịch."
-                        >
-                          i
-                        </span>
+                        <GlossaryInfoTooltip />
                       </div>
                       <textarea
                         className="h-24 w-full resize-none rounded-xl border border-black/10 bg-black/5 p-3 text-sm outline-none dark:border-white/10 dark:bg-white/5"

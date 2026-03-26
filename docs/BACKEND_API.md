@@ -7,7 +7,7 @@
 
 ---
 
-## FE gọi BE ở 4 endpoint duy nhất
+## FE gọi BE ở 5 endpoint duy nhất
 
 | # | Endpoint | FE Service | Mục đích |
 |---|----------|-----------|----------|
@@ -15,6 +15,7 @@
 | 2 | `POST /api/parse-docx` | `services/fileService.ts` | Parse DOCX → pages |
 | 3 | `POST /api/selection-insights` | `selection/services/selectionAiService.ts` | AI phân tích vùng chọn |
 | 4 | `POST /api/export-pdf` | `services/exportPdfService.ts` | Xuất PDF từ backend |
+| 5 | `POST /api/export-docx` | `services/exportDocxService.ts` | Xuất DOCX từ backend |
 
 ---
 
@@ -75,6 +76,20 @@
 
 > Type FE: `SelectionAiResult` trong `selection/types.ts`
 > Type BE: `SelectionInsightResponse` trong `selection-insights.ts`
+
+### `/api/export-pdf` and `/api/export-docx` -> binary file
+```typescript
+{
+  bookName: string;
+  startPage: number;
+  endPage: number;
+  totalPages: number;
+  pages: Array<{
+    id: number;
+    translatedText: string;
+  }>;
+}
+```
 
 ---
 

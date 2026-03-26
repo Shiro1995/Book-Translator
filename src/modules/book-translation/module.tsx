@@ -9,7 +9,7 @@ const BookTranslationPage = lazy(
 export const bookTranslationModule: AppModuleDefinition = {
   key: "book-translation",
   title: "Book Translation",
-  description: "Module dich sach, tach trang, chay auto translation va export PDF.",
+  description: "Module dich sach, tach trang, chay auto translation va export PDF/DOCX.",
   href: routePaths.bookTranslation,
   routes: [
     {
