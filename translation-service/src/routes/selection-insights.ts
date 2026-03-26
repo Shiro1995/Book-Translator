@@ -14,6 +14,7 @@ import {
   isProviderError,
   providerErrorToHttpStatus,
 } from "../lib/provider-errors.js";
+import { DEBUG_TRANSLATION_TIMING_HEADER, isDebugTranslationTimingEnabled } from "../lib/translation-debug.js";
 import { isVietnameseTarget } from "../lib/vietnamese.js";
 
 const router = Router();
@@ -40,6 +41,7 @@ interface SelectionInsightsRequestBody {
     domain?: string;
   };
   contextHash?: string;
+  customInstructions?: string;
 }
 
 interface SelectionInsightAlternative {
@@ -74,6 +76,51 @@ interface SelectionInsightResponse {
 function truncateForPrompt(value: string | undefined, maxLength = 1200) {
   const normalized = (value ?? "").trim();
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+function normalizeKnownSelectionTypos(value: string | undefined) {
+  if (!value) {
+    return "";
+  }
+
+  return value.replace(/\ba\u1ecb\b/giu, (match) => {
+    if (match === match.toUpperCase()) return "AI";
+    if (match === match.toLowerCase()) return "ai";
+    return "Ai";
+  });
+}
+
+function normalizeComparableContext(value: string | undefined) {
+  return (value ?? "").replace(/\s+/gu, " ").trim();
+}
+
+function estimateSelectionInsightMaxTokens(body: SelectionInsightsRequestBody) {
+  const selectedTextLength = body.selectedText?.trim().length ?? 0;
+  const glossaryLength = body.glossary?.trim().length ?? 0;
+  const instructionLength = body.instructions?.trim().length ?? 0;
+  const usesLitePrompt = shouldUseLiteSelectionInsightPrompt(body);
+
+  return Math.max(
+    usesLitePrompt ? 120 : 180,
+    Math.min(
+      usesLitePrompt ? 220 : 360,
+      (usesLitePrompt ? 90 : 140) +
+        selectedTextLength * (usesLitePrompt ? 1.6 : 2.5) +
+        Math.min(glossaryLength, 240) / 12 +
+        Math.min(instructionLength, 160) / 16,
+    ),
+  );
+}
+
+function shouldUseLiteSelectionInsightPrompt(body: SelectionInsightsRequestBody) {
+  const selectedTextLength = body.selectedText?.trim().length ?? 0;
+  const customInstructionsLength = body.customInstructions?.trim().length ?? 0;
+  return (
+    selectedTextLength > 0 &&
+    selectedTextLength <= 80 &&
+    !body.glossary?.trim() &&
+    customInstructionsLength === 0
+  );
 }
 
 function extractJsonFromText(raw: string): unknown {
@@ -211,15 +258,70 @@ function extractSelectionInsights(payload: unknown): SelectionInsightResponse | 
 }
 
 function buildSelectionInsightMessages(body: SelectionInsightsRequestBody) {
+  const usesLitePrompt = shouldUseLiteSelectionInsightPrompt(body);
+  if (usesLitePrompt) {
+    const systemPrompt = [
+      "You translate short selected text for a book translation tool.",
+      "Return ONLY valid JSON. No markdown, no explanation outside JSON.",
+      "Use one JSON object with keys: translationNatural, translationLiteral, explanation.",
+      "Keep explanation optional and very short.",
+      "If target language is Vietnamese, use proper Vietnamese diacritics.",
+    ].join(" ");
+    const userPrompt = [
+      `Target language: ${body.targetLanguage ?? "Vietnamese"}`,
+      `Source language hint: ${body.sourceLanguage ?? "unknown"}`,
+      `Selected text: ${body.selectedText ?? ""}`,
+      body.beforeText?.trim() ? `Context before: ${truncateForPrompt(body.beforeText, 80)}` : "",
+      body.afterText?.trim() ? `Context after: ${truncateForPrompt(body.afterText, 80)}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return {
+      messages: [
+        { role: "system" as const, content: systemPrompt },
+        { role: "user" as const, content: userPrompt },
+      ],
+      promptMeta: {
+        promptMode: "lite",
+        systemPromptLength: systemPrompt.length,
+        userPromptLength: userPrompt.length,
+        includeParagraphContext: false,
+        includePageContext: false,
+        includeExistingTranslation: false,
+        paragraphContextLength: 0,
+        pageContextLength: 0,
+        existingTranslationLength: 0,
+        duplicatePageContext: false,
+        estimatedInputTokens: Math.ceil((systemPrompt.length + userPrompt.length) / 4),
+      },
+    };
+  }
+
   const systemPrompt = [
-    "You are the selection-inspector assistant for a book and document translation application.",
-    "Return strict JSON only.",
-    "Do not include markdown fences or any prose outside the JSON object.",
-    'Use this schema exactly: {"translationNatural":"string","translationLiteral":"string?","explanation":"string?","alternatives":[{"text":"string","note":"string?"}],"glossaryApplied":[{"sourceTerm":"string","targetTerm":"string","status":"applied|suggested|conflict","note":"string?"}],"warnings":["string"],"segmentation":[{"source":"string","explanation":"string?"}],"confidence":0.0}',
-    "Prefer glossary terms when they fit the context.",
-    "Keep the explanation concise and professional in the target language.",
-    "If the target language is Vietnamese, use proper Vietnamese diacritics.",
+    "You analyze a selected passage in a book translation tool.",
+    "Return ONLY valid JSON. No markdown, no explanation outside JSON.",
+    "Use one JSON object with keys: translationNatural, translationLiteral, explanation, alternatives, glossaryApplied, warnings, segmentation, confidence.",
+    "Keep output concise: explanation max 2 short sentences, alternatives max 2, warnings max 2.",
+    "Prefer glossary terms when relevant.",
+    "If target language is Vietnamese, use proper Vietnamese diacritics.",
   ].join(" ");
+
+  const selectedTextLength = body.selectedText?.trim().length ?? 0;
+  const rawParagraphContext = normalizeComparableContext(body.paragraphText);
+  const rawPageContext = normalizeComparableContext(body.pageText);
+  const duplicatePageContext =
+    Boolean(rawParagraphContext) &&
+    Boolean(rawPageContext) &&
+    rawParagraphContext === rawPageContext;
+  const includeParagraphContext = selectedTextLength >= 48 || rawParagraphContext.length <= 320;
+  const includePageContext = selectedTextLength >= 96 && !duplicatePageContext;
+  const includeExistingTranslation = selectedTextLength >= 48;
+  const paragraphContext = includeParagraphContext ? truncateForPrompt(body.paragraphText, 320) : "";
+  const pageContext = includePageContext ? truncateForPrompt(body.pageText, 360) : "";
+  const existingTranslation = includeExistingTranslation
+    ? truncateForPrompt(body.existingTranslation, 220)
+    : "";
 
   const userPrompt = [
     `Book: ${body.bookName ?? "Untitled"}`,
@@ -230,20 +332,35 @@ function buildSelectionInsightMessages(body: SelectionInsightsRequestBody) {
     `Normalized text: ${body.normalizedText ?? ""}`,
     `Text before selection: ${truncateForPrompt(body.beforeText, 240)}`,
     `Text after selection: ${truncateForPrompt(body.afterText, 240)}`,
-    `Paragraph context: ${truncateForPrompt(body.paragraphText, 900)}`,
-    `Page context: ${truncateForPrompt(body.pageText, 1400)}`,
-    `Existing translation on page: ${truncateForPrompt(body.existingTranslation, 600)}`,
+    paragraphContext ? `Paragraph context: ${paragraphContext}` : "",
+    pageContext ? `Page context: ${pageContext}` : "",
+    existingTranslation ? `Existing translation on page: ${existingTranslation}` : "",
     `Document metadata: ${JSON.stringify(body.documentMetadata ?? {})}`,
-    `Glossary: ${truncateForPrompt(body.glossary, 1600)}`,
-    `Extra instructions: ${truncateForPrompt(body.instructions, 600)}`,
+    body.glossary?.trim() ? `Glossary: ${truncateForPrompt(body.glossary, 1600)}` : "",
+    body.instructions?.trim() ? `Extra instructions: ${truncateForPrompt(body.instructions, 600)}` : "",
   ]
     .filter(Boolean)
     .join("\n");
 
-  return [
-    { role: "system" as const, content: systemPrompt },
-    { role: "user" as const, content: userPrompt },
-  ];
+  return {
+    messages: [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: userPrompt },
+    ],
+    promptMeta: {
+      promptMode: "full",
+      systemPromptLength: systemPrompt.length,
+      userPromptLength: userPrompt.length,
+      includeParagraphContext,
+      includePageContext,
+      includeExistingTranslation,
+      paragraphContextLength: paragraphContext.length,
+      pageContextLength: pageContext.length,
+      existingTranslationLength: existingTranslation.length,
+      duplicatePageContext,
+      estimatedInputTokens: Math.ceil((systemPrompt.length + userPrompt.length) / 4),
+    },
+  };
 }
 
 function buildFallbackResponse(translatedText: string): SelectionInsightResponse {
@@ -264,36 +381,76 @@ function buildFallbackResponse(translatedText: string): SelectionInsightResponse
 }
 
 router.post("/", async (req: Request<object, object, SelectionInsightsRequestBody>, res: Response) => {
-  const selectedText = req.body?.selectedText?.trim();
+  const debugTiming = isDebugTranslationTimingEnabled(req.header(DEBUG_TRANSLATION_TIMING_HEADER));
+  const startedAt = debugTiming ? Date.now() : 0;
+  const normalizedRequestBody: SelectionInsightsRequestBody = {
+    ...req.body,
+    selectedText: normalizeKnownSelectionTypos(req.body?.selectedText),
+    normalizedText: normalizeKnownSelectionTypos(req.body?.normalizedText),
+    beforeText: normalizeKnownSelectionTypos(req.body?.beforeText),
+    afterText: normalizeKnownSelectionTypos(req.body?.afterText),
+    paragraphText: normalizeKnownSelectionTypos(req.body?.paragraphText),
+    pageText: normalizeKnownSelectionTypos(req.body?.pageText),
+    existingTranslation: normalizeKnownSelectionTypos(req.body?.existingTranslation),
+  };
+  const selectedText = normalizedRequestBody.selectedText?.trim();
   if (!selectedText) {
     return res.status(400).json({ error: "Missing selected text" });
   }
-  const model = req.body?.model?.trim();
+  const model = normalizedRequestBody.model?.trim();
   if (!model) {
     return res.status(400).json({ error: "Missing model" });
   }
 
-  const targetLanguage = req.body?.targetLanguage?.trim() || "Vietnamese";
+  const targetLanguage = normalizedRequestBody.targetLanguage?.trim() || "Vietnamese";
+  const customInstructions = normalizedRequestBody.instructions?.trim() ?? "";
   const instructionsForRequest = [
-    req.body?.instructions?.trim() ?? "",
+    customInstructions,
     isVietnameseTarget(targetLanguage)
       ? "If you answer in Vietnamese, use full Vietnamese diacritics."
       : "",
   ]
     .filter(Boolean)
     .join("\n");
+  const selectionInsightPrompt = buildSelectionInsightMessages({
+    ...normalizedRequestBody,
+    instructions: instructionsForRequest,
+    customInstructions,
+  });
+  const maxTokens = estimateSelectionInsightMaxTokens({
+    ...normalizedRequestBody,
+    instructions: instructionsForRequest,
+    customInstructions,
+  });
+
+  if (debugTiming) {
+    logger.info("Selection insights request started", {
+      requestId: req.requestId,
+      model,
+      pageId: normalizedRequestBody.pageId,
+      selectedTextLength: selectedText.length,
+      normalizedTextLength: normalizedRequestBody.normalizedText?.trim().length ?? 0,
+      beforeTextLength: normalizedRequestBody.beforeText?.length ?? 0,
+      afterTextLength: normalizedRequestBody.afterText?.length ?? 0,
+      paragraphTextLength: normalizedRequestBody.paragraphText?.length ?? 0,
+      pageTextLength: normalizedRequestBody.pageText?.length ?? 0,
+      glossaryLength: normalizedRequestBody.glossary?.length ?? 0,
+      customInstructionsLength: customInstructions.length,
+      instructionsLength: instructionsForRequest.length,
+      maxTokens,
+      ...selectionInsightPrompt.promptMeta,
+    });
+  }
 
   try {
     const completion = await cliproxyChatCompletionsClient.createCompletion({
       feature: "selection-insights",
       model,
-      messages: buildSelectionInsightMessages({
-        ...req.body,
-        instructions: instructionsForRequest,
-      }),
+      messages: selectionInsightPrompt.messages,
       temperature: 0.1,
-      maxTokens: 2_000,
+      maxTokens,
       requestId: req.requestId,
+      debugTiming,
     });
 
     const structuredPayload =
@@ -301,9 +458,28 @@ router.post("/", async (req: Request<object, object, SelectionInsightsRequestBod
       extractSelectionInsights(extractJsonFromText(completion.messageText));
 
     if (structuredPayload) {
+      if (debugTiming) {
+        logger.info("Selection insights request completed", {
+          requestId: req.requestId,
+          model,
+          pageId: normalizedRequestBody.pageId,
+          source: structuredPayload.source,
+          providerDurationMs: completion.durationMs,
+          totalDurationMs: Date.now() - startedAt,
+        });
+      }
       return res.json(structuredPayload);
     }
 
+    if (debugTiming) {
+      logger.warn("Selection insights request fell back", {
+        requestId: req.requestId,
+        model,
+        pageId: normalizedRequestBody.pageId,
+        providerDurationMs: completion.durationMs,
+        totalDurationMs: Date.now() - startedAt,
+      });
+    }
     return res.json(buildFallbackResponse(completion.messageText || selectedText));
   } catch (error) {
     const providerError = isProviderError(error)
@@ -317,6 +493,7 @@ router.post("/", async (req: Request<object, object, SelectionInsightsRequestBod
       requestId: req.requestId,
       code: providerError.code,
       error: providerError.message,
+      ...(debugTiming ? { totalDurationMs: Date.now() - startedAt } : {}),
     });
 
     return res.status(providerErrorToHttpStatus(providerError)).json({

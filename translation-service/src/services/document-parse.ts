@@ -25,8 +25,6 @@ export async function parseDocxFile(
   originalName: string,
   fileSize: number,
 ): Promise<DocumentParseResult> {
-  const startTime = Date.now();
-
   try {
     const buffer = await fsPromises.readFile(filePath);
     const result = await mammoth.extractRawText({ buffer });
@@ -39,8 +37,7 @@ export async function parseDocxFile(
       }),
     );
 
-    const durationMs = Date.now() - startTime;
-    logger.info("DOCX parsed", { originalName, pages: pages.length, durationMs });
+    logger.info("DOCX parsed", { originalName, pages: pages.length });
 
     return {
       name: originalName,

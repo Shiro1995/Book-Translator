@@ -98,7 +98,6 @@ function createDocxDocument(
 }
 
 export async function exportBookDocx(request: ExportDocxRequest): Promise<ExportDocxResult> {
-  const startTime = Date.now();
   const pagesToExport = request.pages.filter(
     (page) => normalizeLineBreaks(page.translatedText ?? "").length > 0,
   );
@@ -118,7 +117,6 @@ export async function exportBookDocx(request: ExportDocxRequest): Promise<Export
   logger.info("DOCX exported", {
     bookName: request.bookName,
     exportedPages: pagesToExport.length,
-    durationMs: Date.now() - startTime,
   });
 
   return {

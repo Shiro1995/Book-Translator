@@ -51,6 +51,17 @@ export function buildTranslationCacheKey(input: TranslationJobInput): string {
 }
 
 translationQueue.process(async (jobId, input, updateProgress) => {
+  const startedAt = input.debugTiming ? Date.now() : 0;
+  if (input.debugTiming) {
+    logger.info("Translation job processing started", {
+      jobId,
+      requestId: input.requestId,
+      pageId: input.pageId,
+      bookName: input.bookName,
+      model: input.settings.model,
+      textLength: input.text.length,
+    });
+  }
   updateProgress(10);
 
   const request: TranslateRequest = {
@@ -64,6 +75,7 @@ translationQueue.process(async (jobId, input, updateProgress) => {
     bookName: input.bookName,
     requestId: input.requestId,
     jobId,
+    debugTiming: input.debugTiming,
   };
 
   updateProgress(20);
@@ -79,6 +91,15 @@ translationQueue.process(async (jobId, input, updateProgress) => {
   translationCache.set(cacheKey, jobResult);
 
   updateProgress(100);
+  if (input.debugTiming) {
+    logger.info("Translation job processing completed", {
+      jobId,
+      requestId: input.requestId,
+      pageId: input.pageId,
+      durationMs: Date.now() - startedAt,
+      translatedLength: result.translatedText.length,
+    });
+  }
   return jobResult;
 });
 

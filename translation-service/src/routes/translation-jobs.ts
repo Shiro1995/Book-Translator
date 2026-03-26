@@ -19,6 +19,7 @@ import {
   cancelTranslationJob,
 } from "../services/translation.js";
 import { logger } from "../lib/logger.js";
+import { DEBUG_TRANSLATION_TIMING_HEADER, isDebugTranslationTimingEnabled } from "../lib/translation-debug.js";
 
 const router = Router();
 
@@ -124,6 +125,8 @@ router.post("/:jobId/cancel", (req, res) => {
 });
 
 router.post("/sync", async (req, res) => {
+  const debugTiming = isDebugTranslationTimingEnabled(req.header(DEBUG_TRANSLATION_TIMING_HEADER));
+  const startedAt = debugTiming ? Date.now() : 0;
   const parsed = translationJobSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -139,9 +142,29 @@ router.post("/sync", async (req, res) => {
     pageId,
     bookName,
     requestId: req.requestId,
+    debugTiming,
   });
 
+  if (debugTiming) {
+    logger.info("Translation sync request started", {
+      requestId: req.requestId,
+      jobId: job.jobId,
+      initialStatus: job.status,
+      pageId,
+      bookName,
+      model: settings.model,
+      textLength: text.length,
+    });
+  }
+
   if (job.status === "completed" && job.result) {
+    if (debugTiming) {
+      logger.info("Translation sync request completed from cache", {
+        requestId: req.requestId,
+        jobId: job.jobId,
+        totalDurationMs: Date.now() - startedAt,
+      });
+    }
     return res.json({ translatedText: job.result.translatedText });
   }
 
@@ -158,6 +181,14 @@ router.post("/sync", async (req, res) => {
     }
 
     if (current.status === "completed" && current.result) {
+      if (debugTiming) {
+        logger.info("Translation sync request completed", {
+          requestId: req.requestId,
+          jobId: job.jobId,
+          totalDurationMs: Date.now() - startedAt,
+          jobLifetimeMs: Date.now() - current.createdAt,
+        });
+      }
       return res.json({ translatedText: current.result.translatedText });
     }
 
@@ -166,6 +197,16 @@ router.post("/sync", async (req, res) => {
         ? new ProviderError(current.errorCode, current.error ?? "Translation failed")
         : null;
 
+      if (debugTiming) {
+        logger.warn("Translation sync request failed", {
+          requestId: req.requestId,
+          jobId: job.jobId,
+          totalDurationMs: Date.now() - startedAt,
+          errorCode: current.errorCode,
+          error: current.error,
+        });
+      }
+
       return res.status(providerError ? providerErrorToHttpStatus(providerError) : 502).json({
         error: current.error ?? "Translation failed",
         code: current.errorCode,
@@ -173,10 +214,24 @@ router.post("/sync", async (req, res) => {
     }
 
     if (current.status === "canceled") {
+      if (debugTiming) {
+        logger.warn("Translation sync request canceled", {
+          requestId: req.requestId,
+          jobId: job.jobId,
+          totalDurationMs: Date.now() - startedAt,
+        });
+      }
       return res.status(409).json({ error: "Job was canceled" });
     }
   }
 
+  if (debugTiming) {
+    logger.warn("Translation sync request timed out", {
+      requestId: req.requestId,
+      jobId: job.jobId,
+      totalDurationMs: Date.now() - startedAt,
+    });
+  }
   return res.status(504).json({ error: "Translation timed out" });
 });
 

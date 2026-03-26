@@ -7,12 +7,14 @@ import healthRoutes from "./routes/health.js";
 import translationJobRoutes from "./routes/translation-jobs.js";
 import documentJobRoutes from "./routes/document-jobs.js";
 import selectionInsightsRoutes from "./routes/selection-insights.js";
+import selectionTranslateRoutes from "./routes/selection-translate.js";
 import pdfExportRoutes from "./routes/pdf-export.js";
 import docxExportRoutes from "./routes/docx-export.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { rateLimiter } from "./middleware/rate-limiter.js";
 import { logger } from "./lib/logger.js";
+import { DEBUG_TRANSLATION_TIMING_HEADER, isDebugTranslationTimingEnabled } from "./lib/translation-debug.js";
 
 export function createApp() {
   const app = express();
@@ -23,14 +25,16 @@ export function createApp() {
 
   // Request logging
   app.use((req, res, next) => {
-    const start = Date.now();
+    const debugTiming = isDebugTranslationTimingEnabled(req.header(DEBUG_TRANSLATION_TIMING_HEADER));
+    const start = debugTiming ? Date.now() : null;
+
     res.on("finish", () => {
       logger.info("request", {
         requestId: req.requestId,
         method: req.method,
         path: req.path,
         status: res.statusCode,
-        durationMs: Date.now() - start,
+        ...(start !== null ? { durationMs: Date.now() - start } : {}),
       });
     });
     next();
@@ -41,6 +45,7 @@ export function createApp() {
   app.use("/document-jobs", rateLimiter);
   app.use("/api/translate", rateLimiter);
   app.use("/api/parse-docx", rateLimiter);
+  app.use("/api/selection-translate", rateLimiter);
   app.use("/api/selection-insights", rateLimiter);
   app.use("/api/export-pdf", rateLimiter);
   app.use("/api/export-docx", rateLimiter);
@@ -72,6 +77,9 @@ export function createApp() {
     req.url = "/parse-sync";
     documentJobRoutes(req, res, next);
   });
+
+  // POST /api/selection-translate — lightweight popup translation
+  app.use("/api/selection-translate", selectionTranslateRoutes);
 
   // POST /api/selection-insights — selection AI analysis
   app.use("/api/selection-insights", selectionInsightsRoutes);

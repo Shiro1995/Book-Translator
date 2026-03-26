@@ -67,6 +67,7 @@ export class CliproxyChatCompletionsProvider implements TranslationProvider {
       maxTokens: estimateMaxTokens(request.text),
       requestId: request.requestId,
       jobId: request.jobId,
+      debugTiming: request.debugTiming,
     });
 
     const normalizedText = normalizeUserFacingText(completion.messageText).trim();

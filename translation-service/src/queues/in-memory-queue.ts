@@ -165,8 +165,6 @@ export class InMemoryQueue<TInput = unknown, TResult = unknown> {
     const job = this.jobs.get(jobId);
     if (!job || !this.processor) return;
 
-    const startTime = Date.now();
-
     try {
       const result = await this.processor(jobId, input, (progress) => {
         job.progress = progress;
@@ -178,19 +176,16 @@ export class InMemoryQueue<TInput = unknown, TResult = unknown> {
       job.progress = 100;
       job.updatedAt = Date.now();
 
-      const durationMs = Date.now() - startTime;
-      logger.info("Job completed", { queue: this.name, jobId, durationMs });
+      logger.info("Job completed", { queue: this.name, jobId });
     } catch (error) {
       job.status = "failed";
       job.error = error instanceof Error ? error.message : "Unknown error";
       job.errorCode = isProviderError(error) ? error.code : undefined;
       job.updatedAt = Date.now();
 
-      const durationMs = Date.now() - startTime;
       logger.error("Job failed", {
         queue: this.name,
         jobId,
-        durationMs,
         error: job.error,
       });
     }

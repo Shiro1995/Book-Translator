@@ -1619,7 +1619,6 @@ export default function App() {
                     originalText={originalText}
                     currentTranslation={currentPage?.translatedText}
                     glossary={settings.glossary}
-                    model={settings.model}
                     targetLanguage={settings.targetLang}
                     instructions={settings.instructions}
                     readingFontStyle={readingFontStyle}

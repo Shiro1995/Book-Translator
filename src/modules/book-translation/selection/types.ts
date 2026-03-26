@@ -202,6 +202,7 @@ export interface SelectionAiResult {
   segmentation: SelectionAiSegmentation[];
   confidence?: number;
   source: "api" | "fallback";
+  detailLevel?: "quick" | "insights";
 }
 
 export interface SelectionAnalyticsPayload {

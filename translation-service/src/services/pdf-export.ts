@@ -161,7 +161,6 @@ function finalizePdf(doc: PDFKit.PDFDocument) {
 }
 
 export async function exportBookPdf(request: ExportPdfRequest): Promise<ExportPdfResult> {
-  const startTime = Date.now();
   const pagesToExport = request.pages.filter(
     (page) => normalizeLineBreaks(page.translatedText ?? "").length > 0,
   );
@@ -182,7 +181,6 @@ export async function exportBookPdf(request: ExportPdfRequest): Promise<ExportPd
   logger.info("PDF exported", {
     bookName: request.bookName,
     exportedPages: pagesToExport.length,
-    durationMs: Date.now() - startTime,
   });
 
   return {

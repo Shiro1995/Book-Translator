@@ -29,6 +29,7 @@ export interface TranslationJobInput {
   pageId?: number;
   bookName?: string;
   requestId?: string;
+  debugTiming?: boolean;
 }
 
 export interface TranslationJobResult {
@@ -97,6 +98,7 @@ export interface TranslateRequest {
   bookName?: string;
   requestId?: string;
   jobId?: string;
+  debugTiming?: boolean;
 }
 
 export interface TranslateResponse {

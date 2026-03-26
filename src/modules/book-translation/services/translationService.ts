@@ -1,5 +1,9 @@
 import { TranslationSettings } from "../types";
 import { normalizeUserFacingText } from "../utils/text";
+import {
+  isTranslationTimingDebugEnabled,
+  TRANSLATION_TIMING_DEBUG_HEADER,
+} from "./translationDebug";
 
 interface TranslateApiResponse {
   translatedText?: string;
@@ -17,6 +21,14 @@ const FALLBACK_MODELS = [SECONDARY_MODEL, TERTIARY_MODEL] as const;
 const PRIMARY_MODEL_RETRY_INTERVAL_MS = 60_000;
 
 let lastPrimaryModelFailureAt: number | null = null;
+
+function debugTranslationFlow(message: string, meta?: Record<string, unknown>) {
+  if (!isTranslationTimingDebugEnabled()) {
+    return;
+  }
+
+  console.debug(`[page-translate] ${message}`, meta ?? {});
+}
 
 function canRetryPrimaryModel(now = Date.now()) {
   return (
@@ -53,16 +65,34 @@ export class TranslationService {
     const modelsToTry = buildModelsToTry(settings.model);
     let lastError: Error | null = null;
     const attemptedModels: string[] = [];
+    const startedAt = performance.now();
 
-    for (const model of modelsToTry.slice(0, 3)) {
+    debugTranslationFlow("request start", {
+      requestedModel: settings.model,
+      modelsToTry: modelsToTry.slice(0, 3),
+      textLength: text.length,
+      targetLang: settings.targetLang,
+      style: settings.style,
+    });
+
+    for (const [index, model] of modelsToTry.slice(0, 3).entries()) {
       options?.onModelChange?.(model);
       attemptedModels.push(model);
+      const attemptStartedAt = performance.now();
+
+      debugTranslationFlow("attempt start", {
+        attempt: index + 1,
+        model,
+      });
 
       try {
         const response = await fetch("/api/translate", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            ...(isTranslationTimingDebugEnabled()
+              ? { [TRANSLATION_TIMING_DEBUG_HEADER]: "1" }
+              : {}),
           },
           body: JSON.stringify({
             text,
@@ -73,12 +103,22 @@ export class TranslationService {
           }),
         });
 
+        const attemptDurationMs = Math.round(performance.now() - attemptStartedAt);
         const data = (await response.json().catch(() => ({}))) as TranslateApiResponse;
 
         if (response.ok && data.translatedText) {
           if (model === PRIMARY_MODEL) {
             lastPrimaryModelFailureAt = null;
           }
+
+          debugTranslationFlow("attempt succeeded", {
+            attempt: index + 1,
+            model,
+            status: response.status,
+            durationMs: attemptDurationMs,
+            totalDurationMs: Math.round(performance.now() - startedAt),
+            translatedLength: data.translatedText.length,
+          });
 
           return {
             translatedText: normalizeUserFacingText(data.translatedText),
@@ -114,6 +154,14 @@ export class TranslationService {
           .join(" | ");
 
         lastError = new Error(message);
+        debugTranslationFlow("attempt failed", {
+          attempt: index + 1,
+          model,
+          status: response.status,
+          durationMs: attemptDurationMs,
+          code: data.code,
+          error: message,
+        });
       } catch (error) {
         if (model === PRIMARY_MODEL) {
           lastPrimaryModelFailureAt = Date.now();
@@ -121,6 +169,12 @@ export class TranslationService {
 
         const message = error instanceof Error ? error.message : "Translation request failed";
         lastError = new Error(`Translation failed | model=${model} | ${message}`);
+        debugTranslationFlow("attempt failed", {
+          attempt: index + 1,
+          model,
+          durationMs: Math.round(performance.now() - attemptStartedAt),
+          error: lastError.message,
+        });
       }
     }
 
@@ -131,6 +185,12 @@ export class TranslationService {
     const finalMessage = [lastError?.message ?? "Translation failed after 3 attempts", attemptsSummary]
       .filter(Boolean)
       .join(" | ");
+
+    debugTranslationFlow("request failed", {
+      attemptedModels,
+      totalDurationMs: Math.round(performance.now() - startedAt),
+      error: finalMessage,
+    });
 
     throw new Error(finalMessage);
   }

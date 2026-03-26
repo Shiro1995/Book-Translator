@@ -14,7 +14,10 @@ import { computeInspectorPosition, computeMiniBubblePosition } from "../utils/ov
 import { SelectionMiniBubble } from "./SelectionMiniBubble";
 import { SelectionInspector } from "./SelectionInspector";
 import { lookupDictionarySelection } from "../services/dictionaryLookupService";
-import { requestSelectionAiInsights } from "../services/selectionAiService";
+import {
+  POPUP_SELECTION_AI_PRIMARY_MODEL,
+  requestSelectionAiInsights,
+} from "../services/selectionAiService";
 import { trackSelectionAnalytics } from "../services/selectionAnalytics";
 import {
   requestVietnameseAssistBlock,
@@ -35,7 +38,6 @@ interface OriginalTextSelectionPaneProps {
   originalText: string;
   currentTranslation?: string;
   glossary: string;
-  model: string;
   targetLanguage: string;
   instructions: string;
   readingFontStyle: CSSProperties;
@@ -95,7 +97,6 @@ export function OriginalTextSelectionPane({
   originalText,
   currentTranslation,
   glossary,
-  model,
   targetLanguage,
   instructions,
   readingFontStyle,
@@ -107,6 +108,7 @@ export function OriginalTextSelectionPane({
   const hideBubbleTimerRef = useRef<number | null>(null);
   const lastTrackedSelectionIdRef = useRef<string | null>(null);
   const currentSelectionRef = useRef<SelectionSnapshot | null>(null);
+  const insightsRequestedSelectionIdRef = useRef<string | null>(null);
   const dictionaryAbortRef = useRef<AbortController | null>(null);
   const aiAbortRef = useRef<AbortController | null>(null);
   const vietnameseAssistAbortRef = useRef<AbortController | null>(null);
@@ -190,6 +192,7 @@ export function OriginalTextSelectionPane({
     setAiState(IDLE_AI_STATE);
     setVietnameseAssistState(IDLE_VIETNAMESE_ASSIST_STATE);
     lastTrackedSelectionIdRef.current = null;
+    insightsRequestedSelectionIdRef.current = null;
     clearSelection();
   }, [bookId, clearSelection, originalText, pageId]);
 
@@ -204,6 +207,7 @@ export function OriginalTextSelectionPane({
 
       if (isNewSelection) {
         lastTrackedSelectionIdRef.current = selection.id;
+        insightsRequestedSelectionIdRef.current = null;
         trackSelectionAnalytics("selection_created", buildAnalyticsPayload(selection));
       }
 
@@ -240,7 +244,6 @@ export function OriginalTextSelectionPane({
     }
 
     if (activeTab === "dictionary" && dictionaryState.selectionId !== currentSelection.id) {
-      const startedAt = performance.now();
       const payload = buildAnalyticsPayload(currentSelection);
       trackSelectionAnalytics("dictionary_lookup_started", payload);
       dictionaryAbortRef.current?.abort();
@@ -273,10 +276,7 @@ export function OriginalTextSelectionPane({
             error: null,
             data: result,
           });
-          trackSelectionAnalytics("dictionary_lookup_succeeded", {
-            ...payload,
-            responseTime: performance.now() - startedAt,
-          });
+          trackSelectionAnalytics("dictionary_lookup_succeeded", payload);
         })
         .catch((error) => {
           if (dictionaryController.signal.aborted) {
@@ -292,16 +292,14 @@ export function OriginalTextSelectionPane({
           });
           trackSelectionAnalytics("dictionary_lookup_failed", {
             ...payload,
-            responseTime: performance.now() - startedAt,
             errorCode: "dictionary_lookup_failed",
           });
         });
     }
 
-    if (activeTab === "ai" && aiState.selectionId !== currentSelection.id) {
-      const startedAt = performance.now();
+    if (aiState.selectionId !== currentSelection.id) {
       const payload = buildAnalyticsPayload(currentSelection);
-      vietnameseAssistAbortRef.current?.abort();
+      insightsRequestedSelectionIdRef.current = null;
       aiAbortRef.current?.abort();
       const controller = new AbortController();
       aiAbortRef.current = controller;
@@ -322,7 +320,7 @@ export function OriginalTextSelectionPane({
           normalizedText: currentSelection.normalizedText,
           sourceLanguage: currentSelection.metrics.language,
           targetLanguage,
-          model,
+          model: POPUP_SELECTION_AI_PRIMARY_MODEL,
           glossary,
           instructions,
           beforeText: currentSelection.contextWindow.beforeText,
@@ -335,7 +333,10 @@ export function OriginalTextSelectionPane({
           },
           contextHash: currentSelection.contextWindow.contextHash,
         },
-        { signal: controller.signal },
+        {
+          signal: controller.signal,
+          mode: "quick",
+        },
       )
         .then((result) => {
           if (controller.signal.aborted || currentSelectionRef.current?.id !== currentSelection.id) {
@@ -348,10 +349,7 @@ export function OriginalTextSelectionPane({
             error: null,
             data: result,
           });
-          trackSelectionAnalytics("ai_lookup_succeeded", {
-            ...payload,
-            responseTime: performance.now() - startedAt,
-          });
+          trackSelectionAnalytics("ai_lookup_succeeded", payload);
         })
         .catch((error) => {
           if (controller.signal.aborted) {
@@ -372,7 +370,6 @@ export function OriginalTextSelectionPane({
           });
           trackSelectionAnalytics("ai_lookup_failed", {
             ...payload,
-            responseTime: performance.now() - startedAt,
             errorCode,
           });
         });
@@ -388,7 +385,129 @@ export function OriginalTextSelectionPane({
     glossary,
     instructions,
     isInspectorOpen,
-    model,
+    pageId,
+    targetLanguage,
+  ]);
+
+  useEffect(() => {
+    if (!currentSelection || !isInspectorOpen || activeTab !== "ai") {
+      return;
+    }
+
+    if (insightsRequestedSelectionIdRef.current === currentSelection.id) {
+      return;
+    }
+
+    if (
+      aiState.selectionId !== currentSelection.id ||
+      !(
+        (aiState.status === "success" &&
+          aiState.data &&
+          aiState.data.detailLevel !== "insights") ||
+        aiState.status === "error"
+      )
+    ) {
+      return;
+    }
+
+    const quickResult =
+      aiState.status === "success" && aiState.data?.detailLevel === "quick"
+        ? aiState.data
+        : null;
+    const payload = buildAnalyticsPayload(currentSelection);
+    aiAbortRef.current?.abort();
+    const controller = new AbortController();
+    aiAbortRef.current = controller;
+    insightsRequestedSelectionIdRef.current = currentSelection.id;
+    trackSelectionAnalytics("ai_lookup_started", payload);
+    setAiState({
+      selectionId: currentSelection.id,
+      status: "loading",
+      error: null,
+      data: quickResult,
+    });
+
+    void requestSelectionAiInsights(
+      {
+        bookId,
+        bookName,
+        pageId,
+        selectedText: currentSelection.trimmedText,
+        normalizedText: currentSelection.normalizedText,
+        sourceLanguage: currentSelection.metrics.language,
+        targetLanguage,
+        model: POPUP_SELECTION_AI_PRIMARY_MODEL,
+        glossary,
+        instructions,
+        beforeText: currentSelection.contextWindow.beforeText,
+        afterText: currentSelection.contextWindow.afterText,
+        paragraphText: currentSelection.contextWindow.paragraphText,
+        pageText: currentSelection.contextWindow.pageText,
+        existingTranslation: currentTranslation,
+        documentMetadata: {
+          title: bookName,
+        },
+        contextHash: currentSelection.contextWindow.contextHash,
+      },
+      {
+        signal: controller.signal,
+        mode: "insights",
+      },
+    )
+      .then((result) => {
+        if (controller.signal.aborted || currentSelectionRef.current?.id !== currentSelection.id) {
+          return;
+        }
+
+        setAiState({
+          selectionId: currentSelection.id,
+          status: "success",
+          error: null,
+          data: quickResult
+            ? {
+                ...result,
+                translationNatural: quickResult.translationNatural || result.translationNatural,
+                translationLiteral: quickResult.translationLiteral ?? result.translationLiteral,
+                detailLevel: "insights",
+              }
+            : result,
+        });
+        trackSelectionAnalytics("ai_lookup_succeeded", payload);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const message = error instanceof Error ? error.message : "AI lookup failed";
+        const errorCode =
+          error instanceof Error && "code" in error && typeof error.code === "string"
+            ? error.code
+            : "ai_lookup_failed";
+
+        setAiState({
+          selectionId: currentSelection.id,
+          status: "error",
+          error: message,
+          data: null,
+        });
+        trackSelectionAnalytics("ai_lookup_failed", {
+          ...payload,
+          errorCode,
+        });
+      });
+  }, [
+    activeTab,
+    aiState.data,
+    aiState.selectionId,
+    aiState.status,
+    bookId,
+    bookName,
+    currentSelection,
+    currentTranslation,
+    glossary,
+    instructions,
+    isInspectorOpen,
     pageId,
     targetLanguage,
   ]);
@@ -440,7 +559,7 @@ export function OriginalTextSelectionPane({
         bookName,
         glossary,
         instructions,
-        model,
+        model: POPUP_SELECTION_AI_PRIMARY_MODEL,
         targetLanguage,
       },
       { signal: controller.signal },
@@ -480,7 +599,6 @@ export function OriginalTextSelectionPane({
     glossary,
     instructions,
     isInspectorOpen,
-    model,
     targetLanguage,
     vietnameseAssistState.selectionId,
     vietnameseAssistState.status,

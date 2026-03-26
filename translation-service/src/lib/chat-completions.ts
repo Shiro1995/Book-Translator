@@ -18,6 +18,7 @@ export interface ChatCompletionRequest {
   maxTokens?: number;
   requestId?: string;
   jobId?: string;
+  debugTiming?: boolean;
 }
 
 export interface ChatCompletionResult {
@@ -26,6 +27,7 @@ export interface ChatCompletionResult {
   parsedBody: unknown;
   rawBody: string;
   status: number;
+  durationMs: number;
 }
 
 export function resolveChatCompletionModel(requestedModel?: string) {
@@ -152,6 +154,22 @@ export class CliproxyChatCompletionsClient {
 
     for (let attempt = 0; attempt <= config.cliproxyMaxRetries; attempt += 1) {
       const attemptNumber = attempt + 1;
+      const attemptStartedAt = Date.now();
+      const sentAt = new Date(attemptStartedAt).toISOString();
+
+      if (input.debugTiming) {
+        logger.info("Cliproxy request started", {
+          feature: input.feature,
+          provider: "cliproxy",
+          model,
+          requestId: input.requestId,
+          jobId: input.jobId,
+          attempt: attemptNumber,
+          endpoint,
+          sentAt,
+          payload: requestBody,
+        });
+      }
 
       try {
         const response = await fetch(endpoint, {
@@ -166,16 +184,23 @@ export class CliproxyChatCompletionsClient {
 
         const rawBody = await response.text();
         const parsedBody = safeJsonParse(rawBody);
+        const durationMs = Date.now() - attemptStartedAt;
+        const responseAt = new Date().toISOString();
 
-        logger.info("Cliproxy request completed", {
-          feature: input.feature,
-          provider: "cliproxy",
-          model,
-          requestId: input.requestId,
-          jobId: input.jobId,
-          attempt: attemptNumber,
-          status: response.status,
-        });
+        if (input.debugTiming) {
+          logger.info("Cliproxy request completed", {
+            feature: input.feature,
+            provider: "cliproxy",
+            model,
+            requestId: input.requestId,
+            jobId: input.jobId,
+            attempt: attemptNumber,
+            status: response.status,
+            sentAt,
+            responseAt,
+            durationMs,
+          });
+        }
 
         if (!response.ok) {
           throw createHttpError(response.status, extractErrorMessage(parsedBody) ?? rawBody.slice(0, 300));
@@ -196,8 +221,11 @@ export class CliproxyChatCompletionsClient {
           parsedBody,
           rawBody,
           status: response.status,
+          durationMs,
         };
       } catch (error) {
+        const durationMs = Date.now() - attemptStartedAt;
+        const responseAt = new Date().toISOString();
         const providerError = normalizeFetchError(error);
         lastError = providerError;
 
@@ -205,17 +233,22 @@ export class CliproxyChatCompletionsClient {
           throw providerError;
         }
 
-        logger.warn("Retrying Cliproxy request", {
-          feature: input.feature,
-          provider: "cliproxy",
-          model,
-          requestId: input.requestId,
-          jobId: input.jobId,
-          attempt: attemptNumber,
-          nextAttempt: attemptNumber + 1,
-          code: providerError.code,
-          message: providerError.message,
-        });
+        if (input.debugTiming) {
+          logger.warn("Retrying Cliproxy request", {
+            feature: input.feature,
+            provider: "cliproxy",
+            model,
+            requestId: input.requestId,
+            jobId: input.jobId,
+            attempt: attemptNumber,
+            nextAttempt: attemptNumber + 1,
+            code: providerError.code,
+            message: providerError.message,
+            sentAt,
+            responseAt,
+            durationMs,
+          });
+        }
 
         await sleep(getRetryDelayMs(attempt));
       }
