@@ -29,6 +29,10 @@
 /api/export-pdf
   -> routes/pdf-export.ts
   -> services/pdf-export.ts
+
+/api/export-docx
+  -> routes/docx-export.ts
+  -> services/docx-export.ts
 ```
 
 ## Internal Structure
@@ -53,11 +57,15 @@ translation-service/
     services/
       translation.ts
       document-parse.ts
+      pdf-export.ts
+      docx-export.ts
     routes/
       health.ts
       translation-jobs.ts
       document-jobs.ts
       selection-insights.ts
+      pdf-export.ts
+      docx-export.ts
     cache/
       memory-cache.ts
     queues/

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { config } from "../config/index.js";
 import { logger } from "../lib/logger.js";
 import { normalizeUserFacingText } from "../lib/text.js";
-import { exportBookPdf } from "../services/pdf-export.js";
+import { exportBookDocx } from "../services/docx-export.js";
 
 const router = Router();
 const exportPayloadLimitBytes = config.maxUploadSizeMb * 1024 * 1024;
@@ -16,7 +16,7 @@ const upload = multer({
 });
 const uploadNone = upload.none() as unknown as RequestHandler;
 
-const exportPdfSchema = z.object({
+const exportDocxSchema = z.object({
   bookName: z.string().trim().min(1, "Missing bookName"),
   startPage: z.coerce.number().int().min(1),
   endPage: z.coerce.number().int().min(1),
@@ -81,7 +81,7 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "Invalid export payload JSON" });
   }
 
-  const parsed = exportPdfSchema.safeParse(parsedJson);
+  const parsed = exportDocxSchema.safeParse(parsedJson);
   if (!parsed.success) {
     return res.status(400).json({
       error: "Validation failed",
@@ -97,7 +97,7 @@ router.post("/", async (req, res) => {
   }
 
   try {
-    const result = await exportBookPdf({
+    const result = await exportBookDocx({
       bookName: normalizeUserFacingText(parsed.data.bookName),
       startPage: parsed.data.startPage,
       endPage: parsed.data.endPage,
@@ -109,10 +109,10 @@ router.post("/", async (req, res) => {
     });
 
     res.attachment(result.fileName);
-    res.type("application/pdf");
+    res.type("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     return res.send(result.buffer);
   } catch (error) {
-    logger.error("PDF export error", {
+    logger.error("DOCX export error", {
       requestId: req.requestId,
       error: error instanceof Error ? error.message : "Unknown error",
     });
@@ -121,7 +121,7 @@ router.post("/", async (req, res) => {
       error:
         error instanceof Error && error.message
           ? error.message
-          : "Failed to export PDF",
+          : "Failed to export DOCX",
     });
   }
 });

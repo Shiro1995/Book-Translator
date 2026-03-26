@@ -149,6 +149,35 @@ Success:
 }
 ```
 
+## `POST /api/export-docx`
+
+Request: `multipart/form-data` with field `payload` containing JSON
+
+```ts
+{
+  bookName: string;
+  startPage: number;
+  endPage: number;
+  totalPages: number;
+  pages: Array<{
+    id: number;
+    translatedText: string;
+  }>;
+}
+```
+
+Success:
+
+- Response body: DOCX binary
+- Response headers include:
+
+```ts
+{
+  "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "Content-Disposition": "attachment; filename=..."
+}
+```
+
 ## Required Translation-Service Env
 
 ```env

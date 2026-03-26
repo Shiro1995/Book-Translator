@@ -67,6 +67,25 @@ export interface ExportPdfResult {
   exportedPages: number;
 }
 
+export interface ExportDocxPageInput {
+  id: number;
+  translatedText: string;
+}
+
+export interface ExportDocxRequest {
+  bookName: string;
+  startPage: number;
+  endPage: number;
+  totalPages: number;
+  pages: ExportDocxPageInput[];
+}
+
+export interface ExportDocxResult {
+  fileName: string;
+  buffer: Buffer;
+  exportedPages: number;
+}
+
 export interface TranslateRequest {
   text: string;
   model: string;
