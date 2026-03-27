@@ -42,6 +42,7 @@ interface SelectionInsightsRequestBody {
   };
   contextHash?: string;
   customInstructions?: string;
+  detailLevel?: "quick" | "insights";
 }
 
 interface SelectionInsightAlternative {
@@ -101,18 +102,22 @@ function estimateSelectionInsightMaxTokens(body: SelectionInsightsRequestBody) {
   const usesLitePrompt = shouldUseLiteSelectionInsightPrompt(body);
 
   return Math.max(
-    usesLitePrompt ? 120 : 180,
+    usesLitePrompt ? 100 : 140,
     Math.min(
-      usesLitePrompt ? 220 : 360,
-      (usesLitePrompt ? 90 : 140) +
-        selectedTextLength * (usesLitePrompt ? 1.6 : 2.5) +
-        Math.min(glossaryLength, 240) / 12 +
-        Math.min(instructionLength, 160) / 16,
+      usesLitePrompt ? 180 : 280,
+      (usesLitePrompt ? 75 : 110) +
+        selectedTextLength * (usesLitePrompt ? 1.2 : 1.8) +
+        Math.min(glossaryLength, 200) / 18 +
+        Math.min(instructionLength, 120) / 20,
     ),
   );
 }
 
 function shouldUseLiteSelectionInsightPrompt(body: SelectionInsightsRequestBody) {
+  if (body.detailLevel === "insights") {
+    return false;
+  }
+
   const selectedTextLength = body.selectedText?.trim().length ?? 0;
   const customInstructionsLength = body.customInstructions?.trim().length ?? 0;
   return (
@@ -214,6 +219,21 @@ function normalizeSegmentation(value: unknown): SelectionInsightSegmentation[] {
     .filter((item) => item !== null) as SelectionInsightSegmentation[];
 }
 
+function trimExplanationToSingleSentence(value: unknown) {
+  if (typeof value !== "string") return undefined;
+
+  const normalized = normalizeUserFacingText(value).replace(/\s+/gu, " ").trim();
+  if (!normalized) return undefined;
+
+  const firstSentence =
+    normalized.match(/^(.+?[.!?。！？])(?:\s|$)/u)?.[1] ??
+    normalized;
+  const words = firstSentence.split(/\s+/u).slice(0, 20).join(" ").trim();
+  const capped = words.length > 160 ? words.slice(0, 160).trimEnd() : words;
+
+  return capped || undefined;
+}
+
 function normalizeSelectionInsightPayload(payload: unknown): SelectionInsightResponse | null {
   if (!payload || typeof payload !== "object") return null;
 
@@ -233,10 +253,7 @@ function normalizeSelectionInsightPayload(payload: unknown): SelectionInsightRes
       typeof record.translationLiteral === "string"
         ? normalizeUserFacingText(record.translationLiteral).trim()
         : undefined,
-    explanation:
-      typeof record.explanation === "string"
-        ? normalizeUserFacingText(record.explanation).trim()
-        : undefined,
+    explanation: trimExplanationToSingleSentence(record.explanation),
     alternatives: normalizeAlternatives(record.alternatives),
     glossaryApplied: normalizeGlossaryApplied(record.glossaryApplied),
     warnings: normalizeStringArray(record.warnings),
@@ -264,7 +281,7 @@ function buildSelectionInsightMessages(body: SelectionInsightsRequestBody) {
       "You translate short selected text for a book translation tool.",
       "Return ONLY valid JSON. No markdown, no explanation outside JSON.",
       "Use one JSON object with keys: translationNatural, translationLiteral, explanation.",
-      "Keep explanation optional and very short.",
+      "explanation is optional: one short sentence only, max 20 words, one main reason.",
       "If target language is Vietnamese, use proper Vietnamese diacritics.",
     ].join(" ");
     const userPrompt = [
@@ -302,7 +319,9 @@ function buildSelectionInsightMessages(body: SelectionInsightsRequestBody) {
     "You analyze a selected passage in a book translation tool.",
     "Return ONLY valid JSON. No markdown, no explanation outside JSON.",
     "Use one JSON object with keys: translationNatural, translationLiteral, explanation, alternatives, glossaryApplied, warnings, segmentation, confidence.",
-    "Keep output concise: explanation max 2 short sentences, alternatives max 2, warnings max 2.",
+    "explanation: one short sentence only, max 20 words, mention only one key translation decision.",
+    "Keep extras minimal: alternatives max 1, warnings max 1, segmentation max 1.",
+    "Skip any optional field when not needed.",
     "Prefer glossary terms when relevant.",
     "If target language is Vietnamese, use proper Vietnamese diacritics.",
   ].join(" ");
@@ -422,6 +441,19 @@ router.post("/", async (req: Request<object, object, SelectionInsightsRequestBod
     instructions: instructionsForRequest,
     customInstructions,
   });
+  const routePayloadForDebug = {
+    ...normalizedRequestBody,
+    instructions: instructionsForRequest,
+  };
+  const providerPayloadForDebug = {
+    model,
+    messages: selectionInsightPrompt.messages,
+    temperature: 0.1,
+    max_tokens: maxTokens,
+    stream: false,
+  };
+  const routePayloadSizeChars = JSON.stringify(routePayloadForDebug).length;
+  const providerPayloadSizeChars = JSON.stringify(providerPayloadForDebug).length;
 
   if (debugTiming) {
     logger.info("Selection insights request started", {
@@ -436,8 +468,13 @@ router.post("/", async (req: Request<object, object, SelectionInsightsRequestBod
       pageTextLength: normalizedRequestBody.pageText?.length ?? 0,
       glossaryLength: normalizedRequestBody.glossary?.length ?? 0,
       customInstructionsLength: customInstructions.length,
+      requestedDetailLevel: normalizedRequestBody.detailLevel ?? "quick",
       instructionsLength: instructionsForRequest.length,
       maxTokens,
+      routePayloadSizeChars,
+      providerPayloadSizeChars,
+      routePayload: routePayloadForDebug,
+      providerPayload: providerPayloadForDebug,
       ...selectionInsightPrompt.promptMeta,
     });
   }

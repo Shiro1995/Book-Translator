@@ -466,8 +466,7 @@ export function OriginalTextSelectionPane({
           data: quickResult
             ? {
                 ...result,
-                translationNatural: quickResult.translationNatural || result.translationNatural,
-                translationLiteral: quickResult.translationLiteral ?? result.translationLiteral,
+                translationNatural: result.translationNatural || quickResult.translationNatural,
                 detailLevel: "insights",
               }
             : result,
@@ -489,7 +488,7 @@ export function OriginalTextSelectionPane({
           selectionId: currentSelection.id,
           status: "error",
           error: message,
-          data: null,
+          data: quickResult,
         });
         trackSelectionAnalytics("ai_lookup_failed", {
           ...payload,

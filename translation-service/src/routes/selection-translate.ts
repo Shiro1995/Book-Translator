@@ -37,8 +37,6 @@ interface SelectionTranslateRequestBody {
 
 interface SelectionTranslateResponse {
   translationNatural: string;
-  translationLiteral?: string;
-  explanation?: string;
   alternatives: [];
   glossaryApplied: [];
   warnings: string[];
@@ -74,7 +72,7 @@ function shouldIncludeContext(body: SelectionTranslateRequestBody) {
     return false;
   }
 
-  if (selectedText.length < 50) {
+  if (selectedText.length <= 24) {
     return true;
   }
 
@@ -86,16 +84,14 @@ function shouldIncludeContext(body: SelectionTranslateRequestBody) {
 
 function estimateSelectionTranslateMaxTokens(body: SelectionTranslateRequestBody) {
   const selectedTextLength = body.selectedText?.trim().length ?? 0;
-  const glossaryLength = body.glossary?.trim().length ?? 0;
-  const instructionLength = body.instructions?.trim().length ?? 0;
+  const includeContext = shouldIncludeContext(body);
 
   const estimated = Math.round(
-    90 +
-      selectedTextLength * 1.1 +
-      Math.min(glossaryLength, 240) / 20 +
-      Math.min(instructionLength, 140) / 24,
+    60 +
+      selectedTextLength * 0.8 +
+      (includeContext ? 16 : 0),
   );
-  return Math.max(120, Math.min(220, estimated));
+  return Math.max(72, Math.min(140, estimated));
 }
 
 function extractJsonFromText(raw: string): unknown {
@@ -133,14 +129,6 @@ function normalizeSelectionTranslatePayload(payload: unknown): SelectionTranslat
 
   return {
     translationNatural,
-    translationLiteral:
-      typeof record.translationLiteral === "string"
-        ? normalizeUserFacingText(record.translationLiteral).trim()
-        : undefined,
-    explanation:
-      typeof record.explanation === "string"
-        ? normalizeUserFacingText(record.explanation).trim()
-        : undefined,
     alternatives: [],
     glossaryApplied: [],
     warnings: [],
@@ -155,8 +143,7 @@ function buildSelectionTranslateMessages(body: SelectionTranslateRequestBody) {
   const systemPrompt = [
     "Translate selected text into the target language.",
     "Return ONLY valid JSON. No markdown, no explanation outside JSON.",
-    "Use one JSON object with keys: translationNatural, translationLiteral, explanation.",
-    "explanation is optional and must be one short sentence at most.",
+    "Use one JSON object with key: translationNatural.",
     "If target language is Vietnamese, use proper Vietnamese diacritics.",
   ].join(" ");
 
@@ -171,8 +158,6 @@ function buildSelectionTranslateMessages(body: SelectionTranslateRequestBody) {
       : "",
     `Text: ${body.selectedText ?? ""}`,
     includeContext && mergedContext ? `Context: ${mergedContext}` : "",
-    body.glossary?.trim() ? `Glossary: ${truncateForPrompt(body.glossary, 500)}` : "",
-    body.instructions?.trim() ? `Instruction: ${truncateForPrompt(body.instructions, 180)}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -241,6 +226,19 @@ router.post("/", async (req: Request<object, object, SelectionTranslateRequestBo
     ...normalizedRequestBody,
     instructions: instructionsForRequest,
   });
+  const routePayloadForDebug = {
+    ...normalizedRequestBody,
+    instructions: instructionsForRequest,
+  };
+  const providerPayloadForDebug = {
+    model,
+    messages: selectionTranslatePrompt.messages,
+    temperature: 0,
+    max_tokens: maxTokens,
+    stream: false,
+  };
+  const routePayloadSizeChars = JSON.stringify(routePayloadForDebug).length;
+  const providerPayloadSizeChars = JSON.stringify(providerPayloadForDebug).length;
 
   if (debugTiming) {
     logger.info("Selection translate request started", {
@@ -254,6 +252,10 @@ router.post("/", async (req: Request<object, object, SelectionTranslateRequestBo
       glossaryLength: normalizedRequestBody.glossary?.length ?? 0,
       instructionsLength: instructionsForRequest.length,
       maxTokens,
+      routePayloadSizeChars,
+      providerPayloadSizeChars,
+      routePayload: routePayloadForDebug,
+      providerPayload: providerPayloadForDebug,
       ...selectionTranslatePrompt.promptMeta,
     });
   }
@@ -263,7 +265,7 @@ router.post("/", async (req: Request<object, object, SelectionTranslateRequestBo
       feature: "selection-translate",
       model,
       messages: selectionTranslatePrompt.messages,
-      temperature: 0.1,
+      temperature: 0,
       maxTokens,
       requestId: req.requestId,
       debugTiming,

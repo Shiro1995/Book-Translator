@@ -319,7 +319,10 @@ const aiMicroFallbackProvider: VietnameseAssistFallbackProvider = {
           pageText: request.selection.contextWindow.pageText,
           contextHash: request.selection.contextWindow.contextHash,
         },
-        { signal: options?.signal },
+        {
+          signal: options?.signal,
+          mode: "insights",
+        },
       );
 
       const explanation = aiResult.explanation?.trim() || aiResult.translationNatural.trim();
