@@ -83,6 +83,8 @@ translationQueue.process(async (jobId, input, updateProgress) => {
   const result = await provider.translate(request);
   const jobResult: TranslationJobResult = {
     translatedText: result.translatedText,
+    providerPayload: result.providerPayload,
+    providerResponse: result.providerResponse,
   };
 
   updateProgress(90);

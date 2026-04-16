@@ -29,6 +29,8 @@ const envSchema = z.object({
   RATE_LIMIT_MAX: integerWithDefault(30),
   RATE_LIMIT_WINDOW_MS: integerWithDefault(60_000),
   MAX_UPLOAD_SIZE_MB: integerWithDefault(50),
+  REQUEST_HISTORY_MAX_ENTRIES: integerWithDefault(5_000),
+  REQUEST_HISTORY_ADMIN_CODE: z.string().trim().min(1).default("Lapprono1"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
@@ -50,6 +52,8 @@ export const config = {
   rateLimitMax: env.RATE_LIMIT_MAX,
   rateLimitWindowMs: env.RATE_LIMIT_WINDOW_MS,
   maxUploadSizeMb: env.MAX_UPLOAD_SIZE_MB,
+  requestHistoryMaxEntries: env.REQUEST_HISTORY_MAX_ENTRIES,
+  requestHistoryAdminCode: env.REQUEST_HISTORY_ADMIN_CODE,
   logLevel: env.LOG_LEVEL,
 } as const;
 

@@ -51,6 +51,16 @@ function buildTranslationMessages(request: TranslateRequest) {
   ];
 }
 
+function buildTranslationProviderPayload(request: TranslateRequest) {
+  return {
+    model: request.model,
+    messages: buildTranslationMessages(request),
+    temperature: 0.15,
+    max_tokens: estimateMaxTokens(request.text),
+    stream: false,
+  };
+}
+
 function estimateMaxTokens(text: string) {
   return Math.max(1_024, Math.min(8_192, Math.ceil(text.length * 1.5)));
 }
@@ -59,12 +69,13 @@ export class CliproxyChatCompletionsProvider implements TranslationProvider {
   readonly name = "cliproxy-chat-completions";
 
   async translate(request: TranslateRequest): Promise<TranslateResponse> {
+    const providerPayload = buildTranslationProviderPayload(request);
     const completion = await cliproxyChatCompletionsClient.createCompletion({
       feature: "translation",
       model: request.model,
-      messages: buildTranslationMessages(request),
-      temperature: 0.15,
-      maxTokens: estimateMaxTokens(request.text),
+      messages: providerPayload.messages,
+      temperature: providerPayload.temperature,
+      maxTokens: providerPayload.max_tokens,
       requestId: request.requestId,
       jobId: request.jobId,
       debugTiming: request.debugTiming,
@@ -89,6 +100,10 @@ export class CliproxyChatCompletionsProvider implements TranslationProvider {
       );
     }
 
-    return { translatedText: normalizedText };
+    return {
+      translatedText: normalizedText,
+      providerPayload,
+      providerResponse: completion.parsedBody,
+    };
   }
 }

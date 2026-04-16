@@ -34,6 +34,8 @@ export interface TranslationJobInput {
 
 export interface TranslationJobResult {
   translatedText: string;
+  providerPayload?: unknown;
+  providerResponse?: unknown;
 }
 
 export interface ParsedPage {
@@ -103,4 +105,6 @@ export interface TranslateRequest {
 
 export interface TranslateResponse {
   translatedText: string;
+  providerPayload?: unknown;
+  providerResponse?: unknown;
 }

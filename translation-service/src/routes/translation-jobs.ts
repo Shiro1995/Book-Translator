@@ -20,6 +20,7 @@ import {
 } from "../services/translation.js";
 import { logger } from "../lib/logger.js";
 import { DEBUG_TRANSLATION_TIMING_HEADER, isDebugTranslationTimingEnabled } from "../lib/translation-debug.js";
+import { mergeRequestHistoryMeta } from "../lib/request-history.js";
 
 const router = Router();
 
@@ -64,6 +65,17 @@ router.post("/", (req, res) => {
     pageId,
     bookName,
     requestId: req.requestId,
+  });
+
+  mergeRequestHistoryMeta(res, {
+    feature: "page-translate",
+    routeType: "async-job-submit",
+    pageId,
+    bookName,
+    model: settings.model,
+    textLength: text.length,
+    jobId: job.jobId,
+    jobStatus: job.status,
   });
 
   logger.info("Translation job submitted", {
@@ -136,6 +148,15 @@ router.post("/sync", async (req, res) => {
   }
 
   const { text, settings, pageId, bookName } = parsed.data;
+  mergeRequestHistoryMeta(res, {
+    feature: "page-translate",
+    routeType: "sync",
+    pageId,
+    bookName,
+    model: settings.model,
+    textLength: text.length,
+    debugTiming,
+  });
   const job = submitTranslationJob({
     text,
     settings: buildSettings(settings),
@@ -143,6 +164,10 @@ router.post("/sync", async (req, res) => {
     bookName,
     requestId: req.requestId,
     debugTiming,
+  });
+  mergeRequestHistoryMeta(res, {
+    jobId: job.jobId,
+    jobInitialStatus: job.status,
   });
 
   if (debugTiming) {
@@ -158,6 +183,13 @@ router.post("/sync", async (req, res) => {
   }
 
   if (job.status === "completed" && job.result) {
+    mergeRequestHistoryMeta(res, {
+      cacheHit: true,
+      jobStatus: "completed",
+      translatedLength: job.result.translatedText.length,
+      providerPayload: job.result.providerPayload,
+      providerResponse: job.result.providerResponse,
+    });
     if (debugTiming) {
       logger.info("Translation sync request completed from cache", {
         requestId: req.requestId,
@@ -181,6 +213,14 @@ router.post("/sync", async (req, res) => {
     }
 
     if (current.status === "completed" && current.result) {
+      mergeRequestHistoryMeta(res, {
+        cacheHit: false,
+        jobStatus: "completed",
+        jobLifetimeMs: Date.now() - current.createdAt,
+        translatedLength: current.result.translatedText.length,
+        providerPayload: current.result.providerPayload,
+        providerResponse: current.result.providerResponse,
+      });
       if (debugTiming) {
         logger.info("Translation sync request completed", {
           requestId: req.requestId,
@@ -196,6 +236,11 @@ router.post("/sync", async (req, res) => {
       const providerError = current.errorCode
         ? new ProviderError(current.errorCode, current.error ?? "Translation failed")
         : null;
+      mergeRequestHistoryMeta(res, {
+        jobStatus: "failed",
+        errorCode: current.errorCode,
+        error: current.error,
+      });
 
       if (debugTiming) {
         logger.warn("Translation sync request failed", {
@@ -214,6 +259,9 @@ router.post("/sync", async (req, res) => {
     }
 
     if (current.status === "canceled") {
+      mergeRequestHistoryMeta(res, {
+        jobStatus: "canceled",
+      });
       if (debugTiming) {
         logger.warn("Translation sync request canceled", {
           requestId: req.requestId,
@@ -225,6 +273,9 @@ router.post("/sync", async (req, res) => {
     }
   }
 
+  mergeRequestHistoryMeta(res, {
+    jobStatus: "timed_out",
+  });
   if (debugTiming) {
     logger.warn("Translation sync request timed out", {
       requestId: req.requestId,

@@ -23,6 +23,7 @@ app.listen(config.port, "0.0.0.0", () => {
     queueConcurrency: config.queueConcurrency,
     cacheMaxSize: config.cacheMaxSize,
     cacheTtlSeconds: config.cacheTtlSeconds,
+    requestHistoryMaxEntries: config.requestHistoryMaxEntries,
   });
 });
 

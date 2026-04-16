@@ -98,6 +98,13 @@ export default function HomePage() {
               {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
             </button>
 
+            <button
+              onClick={() => navigate(routePaths.requestHistory)}
+              className="w-full rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium hover:bg-black/5 sm:w-auto dark:border-white/10 dark:bg-zinc-900"
+            >
+              Request history
+            </button>
+
             <label className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-lg shadow-emerald-900/20 transition-all hover:bg-emerald-700 sm:w-auto">
               <Upload size={16} />
               Tải sách lên
