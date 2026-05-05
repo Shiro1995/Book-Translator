@@ -23,16 +23,26 @@ export default function HomePage() {
   );
 
   useEffect(() => {
-    try {
-      const restoredSessions = restoreDraftSessions();
-      if (restoredSessions.length > 0) {
-        persistDraftSessions(restoredSessions);
+    let isCancelled = false;
+
+    void (async () => {
+      try {
+        const restoredSessions = await restoreDraftSessions();
+        if (isCancelled) {
+          return;
+        }
+
+        setDraftSessions(restoredSessions);
+        void persistDraftSessions(restoredSessions);
+        clearLegacyDraftState();
+      } catch (error) {
+        console.error("Failed to restore draft sessions on home page", error);
       }
-      clearLegacyDraftState();
-      setDraftSessions(restoredSessions);
-    } catch (error) {
-      console.error("Failed to restore draft sessions on home page", error);
-    }
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -73,7 +83,7 @@ export default function HomePage() {
   const handleRemoveDraftSession = (bookId: string) => {
     setDraftSessions((prev) => {
       const nextSessions = prev.filter((session) => session.book.id !== bookId);
-      persistDraftSessions(nextSessions);
+      void persistDraftSessions(nextSessions);
       clearLegacyDraftState();
       return nextSessions;
     });

@@ -310,24 +310,37 @@ export default function App() {
   }, [isDarkMode]);
 
   useEffect(() => {
-    try {
-      const hasPendingLaunch = Boolean(peekPendingBookTranslationLaunch());
-      const normalizedSessions = restoreDraftSessions();
+    let isCancelled = false;
 
-      if (normalizedSessions.length > 0) {
-        setDraftSessions(normalizedSessions);
-        if (!hasPendingLaunch) {
-          setBook(normalizedSessions[0].book);
-          setSettings(getSettingsFromBook(normalizedSessions[0].book));
-          setCurrentPageIdx(normalizedSessions[0].currentPageIdx);
+    void (async () => {
+      try {
+        const hasPendingLaunch = Boolean(peekPendingBookTranslationLaunch());
+        const normalizedSessions = await restoreDraftSessions();
+
+        if (isCancelled) {
+          return;
         }
-        return;
+
+        if (normalizedSessions.length > 0) {
+          setDraftSessions(normalizedSessions);
+          if (!hasPendingLaunch) {
+            setBook(normalizedSessions[0].book);
+            setSettings(getSettingsFromBook(normalizedSessions[0].book));
+            setCurrentPageIdx(normalizedSessions[0].currentPageIdx);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to restore draft state", error);
+      } finally {
+        if (!isCancelled) {
+          setHasRestoredDraftState(true);
+        }
       }
-    } catch (error) {
-      console.error("Failed to restore draft state", error);
-    } finally {
-      setHasRestoredDraftState(true);
-    }
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -335,7 +348,7 @@ export default function App() {
       return;
     }
 
-    persistDraftSessions(draftSessions);
+    void persistDraftSessions(draftSessions);
   }, [draftSessions, hasRestoredDraftState]);
 
   useEffect(() => {
@@ -598,9 +611,7 @@ export default function App() {
       return;
     }
 
-    const matchedSession =
-      draftSessions.find((session) => session.book.id === pendingLaunch.bookId) ??
-      restoreDraftSessions().find((session) => session.book.id === pendingLaunch.bookId);
+    const matchedSession = draftSessions.find((session) => session.book.id === pendingLaunch.bookId);
 
     if (matchedSession) {
       openDraftSession(matchedSession);
